@@ -1,9 +1,10 @@
 // Unified plugin overview — "what plugin content do I have, across every agent?".
 //
-// Plugins only load natively on Claude, Codex, and Cursor. The other agents can't
-// load plugins at all; they receive plugin *content* as skills (surfaced by the
-// mirror via `npx skills add`). So a true cross-agent picture is three layers:
-//   • native plugins, read per plugin-capable agent (Claude, Codex);
+// Plugins load natively on Claude, Codex, GitHub Copilot, and Cursor. Kimi has no
+// proven non-interactive native plugin ABI and receives exact loose skills/MCP.
+// Copilot can retain loose fallback content from an older/failed install, so a
+// true cross-agent picture is three layers:
+//   • native plugins, read per readable plugin-capable agent;
 //   • Cursor, a write-only plugin target with no list CLI (not readable);
 //   • the plugin-derived skills present on each non-plugin agent, computed by
 //     intersecting the global skill list (`npx skills list`) with the skill names
@@ -19,7 +20,7 @@ export type AgentDerivedSkills = { agent: AgentId; skills: DerivedSkillEntry[] }
 
 export type PluginOverview = {
   // Native plugin reads for the plugin-capable agents that have a list CLI
-  // (claude-code, codex). Cursor is a plugin target but write-only — see below.
+  // (claude-code, codex, github-copilot). Cursor is write-only — see below.
   native: PluginAdapterRead[];
   // Plugin-derived skills present on each non-plugin (skill-cohort) agent.
   derived: AgentDerivedSkills[];

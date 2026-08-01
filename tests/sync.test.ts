@@ -1,67 +1,41 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import * as TOML from "smol-toml";
+import { adapters } from "../src/adapters/index.ts";
 import { createJsonMcpAdapter } from "../src/adapters/json-mcp.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
-import { adapters } from "../src/adapters/index.ts";
-import { runSync, computeUnion, runDirectional, runFanOut, runRemove, runSelectiveMcpSync } from "../src/sync.ts";
+import { computeUnion } from "../src/mcp-state.ts";
+import {
+  runDirectional,
+  runFanOut,
+  runRemove,
+  runSelectiveMcpSync,
+} from "../src/sync.ts";
 import { runDoctor } from "../src/doctor.ts";
 import type { McpServer } from "../src/types.ts";
-
-const STDIO: McpServer = {
-  type: "stdio",
-  command: "npx",
-  args: ["-y", "@modelcontextprotocol/server-github"],
-  env: { GITHUB_TOKEN: "x" },
-};
-const HTTP: McpServer = { type: "http", url: "https://mcp.linear.app/sse" };
-const BIGQUERY: McpServer = { type: "http", url: "https://bigquery.googleapis.com/mcp" };
+import {
+  BIGQUERY,
+  HTTP,
+  STDIO,
+  runSync,
+  setupSyncTestEnvironment,
+  writeAgentJson,
+  writeCodexToml,
+  type SyncTestEnvironment,
+} from "./sync-fixtures.ts";
 
 let workDir: string;
-let originalHome: string | undefined;
-let originalXdg: string | undefined;
+let testEnvironment: SyncTestEnvironment;
 
 beforeEach(async () => {
-  workDir = await mkdtemp(join(tmpdir(), "syncthis-"));
-  originalHome = process.env.HOME;
-  originalXdg = process.env.XDG_CONFIG_HOME;
-  process.env.HOME = workDir;
-  // Clear adapter env vars so they don't redirect adapter paths during tests. The
-  // goose adapter honors XDG_CONFIG_HOME unconditionally (like Goose), so clearing it
-  // keeps its writes under the temp HOME (~/.config) instead of the real config dir.
-  delete process.env.COPILOT_HOME;
-  delete process.env.OPENCLAW_CONFIG_PATH;
-  delete process.env.XDG_CONFIG_HOME;
+  testEnvironment = await setupSyncTestEnvironment();
+  workDir = testEnvironment.workDir;
 });
 
 afterEach(async () => {
-  process.env.HOME = originalHome;
-  if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = originalXdg;
-  await rm(workDir, { recursive: true, force: true });
+  await testEnvironment.restore();
 });
-
-async function writeAgentJson(rel: string, mcpServers: Record<string, McpServer>, extras: Record<string, unknown> = {}) {
-  const path = join(workDir, rel);
-  await mkdir(join(path, ".."), { recursive: true });
-  await Bun.write(path, JSON.stringify({ ...extras, mcpServers }));
-}
-
-async function writeCodexToml(servers: Record<string, McpServer>, extras = "") {
-  const path = join(workDir, ".codex", "config.toml");
-  await mkdir(join(workDir, ".codex"), { recursive: true });
-  const blocks: string[] = [];
-  for (const [name, s] of Object.entries(servers)) {
-    if ("url" in s) blocks.push(`[mcp_servers.${name}]\nurl = "${s.url}"\n`);
-    else {
-      const args = s.args ? `args = ${JSON.stringify(s.args)}\n` : "";
-      blocks.push(`[mcp_servers.${name}]\ncommand = "${s.command}"\n${args}`);
-    }
-  }
-  await Bun.write(path, extras + blocks.join("\n"));
-}
 
 describe("computeUnion", () => {
   test("merges servers from multiple agents", () => {
@@ -181,7 +155,7 @@ describe("json-mcp adapter", () => {
 
 describe("codex adapter (TOML)", () => {
   test("read parses mcp_servers", async () => {
-    await writeCodexToml({ gh: STDIO, lin: HTTP });
+    await writeCodexToml(workDir, { gh: STDIO, lin: HTTP });
     const r = await codexAdapter.read();
     expect(r.exists).toBe(true);
     expect(Object.keys(r.servers).sort()).toEqual(["gh", "lin"]);
@@ -190,7 +164,7 @@ describe("codex adapter (TOML)", () => {
   });
 
   test("write preserves non-mcp_servers sections", async () => {
-    await writeCodexToml({}, '[tui]\nstatus_line = ["a"]\n\n[projects."/x"]\ntrust_level = "trusted"\n\n');
+    await writeCodexToml(workDir, {}, '[tui]\nstatus_line = ["a"]\n\n[projects."/x"]\ntrust_level = "trusted"\n\n');
     await codexAdapter.write({ gh: STDIO }, { dryRun: false });
     const text = await Bun.file(codexAdapter.targetPath()).text();
     const parsed = TOML.parse(text) as Record<string, unknown>;
@@ -208,7 +182,7 @@ describe("codex adapter (TOML)", () => {
 
 describe("runSync (cross-pollinate)", () => {
   test("propagates server from one agent to all others", async () => {
-    await writeAgentJson(".claude.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
 
     const report = await runSync({ skipSkills: true });
     expect(Object.keys(report.union)).toEqual(["gh"]);
@@ -226,8 +200,8 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("merges union from multiple agents", async () => {
-    await writeAgentJson(".claude.json", { gh: STDIO });
-    await writeAgentJson(".cursor/mcp.json", { lin: HTTP });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { lin: HTTP });
 
     const report = await runSync({ skipSkills: true });
     expect(Object.keys(report.union).sort()).toEqual(["gh", "lin"]);
@@ -264,7 +238,7 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("sync writes the BigQuery remote to OpenCode disabled", async () => {
-    await writeAgentJson(".cursor/mcp.json", { bigquery: BIGQUERY });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { bigquery: BIGQUERY });
     const report = await runSync({ skipSkills: true });
     expect(report.conflicts).toEqual([]);
     const opencodeWrite = report.writes.find((w) => w.agent === "opencode")!;
@@ -288,8 +262,8 @@ describe("runSync (cross-pollinate)", () => {
   test("preserves conflict — leaves each agent's own version untouched", async () => {
     const v1: McpServer = { type: "stdio", command: "version-one" };
     const v2: McpServer = { type: "stdio", command: "version-two" };
-    await writeAgentJson(".claude.json", { dup: v1, safe: STDIO });
-    await writeAgentJson(".cursor/mcp.json", { dup: v2 });
+    await writeAgentJson(workDir, ".claude.json", { dup: v1, safe: STDIO });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { dup: v2 });
 
     const report = await runSync({ skipSkills: true });
     expect(report.conflicts).toHaveLength(1);
@@ -309,14 +283,14 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("idempotent — second sync is all unchanged", async () => {
-    await writeAgentJson(".claude.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
     await runSync({ skipSkills: true });
     const r2 = await runSync({ skipSkills: true });
     for (const w of r2.writes) expect(w.status).toBe("unchanged");
   });
 
   test("dry-run does not write to any agent", async () => {
-    await writeAgentJson(".claude.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
     const r = await runSync({ skipSkills: true, dryRun: true });
     expect(r.writes.every((w) => w.status === "synced" || w.status === "unchanged")).toBe(true);
     expect(r.writes.filter((w) => w.message === "dry-run")).not.toHaveLength(0);
@@ -344,8 +318,8 @@ describe("runSync (cross-pollinate)", () => {
   test("flags conflicts when only env values differ", async () => {
     const v1 = { type: "stdio" as const, command: "x", env: { TOK: "A" } };
     const v2 = { type: "stdio" as const, command: "x", env: { TOK: "B" } };
-    await writeAgentJson(".claude.json", { gh: v1 });
-    await writeAgentJson(".cursor/mcp.json", { gh: v2 });
+    await writeAgentJson(workDir, ".claude.json", { gh: v1 });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: v2 });
     const r = await runSync({ skipSkills: true });
     expect(r.conflicts).toHaveLength(1);
     expect(r.conflicts[0]!.name).toBe("gh");
@@ -353,7 +327,7 @@ describe("runSync (cross-pollinate)", () => {
 
   test("preserves type:sse round-trip through codex", async () => {
     const sse: McpServer = { type: "sse", url: "https://example.com/sse" };
-    await writeAgentJson(".claude.json", { stream: sse });
+    await writeAgentJson(workDir, ".claude.json", { stream: sse });
     await runSync({ skipSkills: true });
     // Codex's TOML adapter explicitly preserves the sse type field on round-trip.
     // Agents that can't represent sse (windsurf, copilot, hermes, opencode) downcast it
@@ -369,7 +343,9 @@ describe("runSync (cross-pollinate)", () => {
     // 2nd sync would see sse-vs-http for the same name and raise a conflict the user can
     // never resolve. Transport is excluded from the identity, so sync must stay at zero
     // conflicts across repeated runs.
-    await writeAgentJson(".cursor/mcp.json", { stream: { type: "sse", url: "https://example.com/sse" } });
+    await writeAgentJson(workDir, ".cursor/mcp.json", {
+      stream: { type: "sse", url: "https://example.com/sse" },
+    });
     const r1 = await runSync({ skipSkills: true });
     expect(r1.conflicts).toEqual([]);
     const r2 = await runSync({ skipSkills: true });
@@ -383,7 +359,7 @@ describe("runSync (cross-pollinate)", () => {
 
   test("corrupt file in one agent doesn't kill whole sync", async () => {
     await Bun.write(join(workDir, ".claude.json"), "{not valid json");
-    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: STDIO });
     const r = await runSync({ skipSkills: true });
     const claudeWrite = r.writes.find((w) => w.agent === "claude-code")!;
     expect(claudeWrite.status).toBe("failed");
@@ -393,7 +369,7 @@ describe("runSync (cross-pollinate)", () => {
 
   test("directional sync refuses to apply when source cannot be read", async () => {
     await Bun.write(join(workDir, ".claude.json"), "{not valid json");
-    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: STDIO });
 
     await expect(
       runDirectional({ from: "claude-code", to: "cursor", apply: true }),
@@ -406,8 +382,8 @@ describe("runSync (cross-pollinate)", () => {
   test("selective MCP sync adds chosen servers without overwriting conflicts", async () => {
     const sourceDup: McpServer = { type: "stdio", command: "source-version" };
     const targetDup: McpServer = { type: "stdio", command: "target-version" };
-    await writeAgentJson(".claude.json", { gh: STDIO, dup: sourceDup });
-    await writeAgentJson(".cursor/mcp.json", { dup: targetDup });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO, dup: sourceDup });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { dup: targetDup });
 
     const preview = await runSelectiveMcpSync({
       from: "claude-code",
@@ -438,8 +414,8 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("fan-out mirrors one clean source to every other agent", async () => {
-    await writeAgentJson(".gemini/antigravity/mcp_config.json", { lin: HTTP });
-    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".gemini/antigravity/mcp_config.json", { lin: HTTP });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: STDIO });
 
     const preview = await runFanOut({ from: "antigravity", apply: false });
     expect(preview.targets.find((t) => t.to === "cursor")?.diff.remove).toEqual(["gh"]);
@@ -454,8 +430,8 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("remove deletes one server from every agent without union re-propagation", async () => {
-    await writeAgentJson(".claude.json", { gh: STDIO, lin: HTTP });
-    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO, lin: HTTP });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: STDIO });
 
     const preview = await runRemove({ name: "gh", apply: false });
     expect(preview.writes.filter((w) => w.status === "synced")).toHaveLength(2);
@@ -470,8 +446,8 @@ describe("runSync (cross-pollinate)", () => {
   });
 
   test("remove with an agent scope only touches the named agents", async () => {
-    await writeAgentJson(".claude.json", { gh: STDIO, lin: HTTP });
-    await writeAgentJson(".cursor/mcp.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO, lin: HTTP });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: STDIO });
 
     // Scope to cursor only — Claude must keep gh.
     const preview = await runRemove({ name: "gh", agents: ["cursor"], apply: false });
@@ -512,8 +488,8 @@ describe("runSync (cross-pollinate)", () => {
 
 describe("runDoctor", () => {
   test("reports coverage per server", async () => {
-    await writeAgentJson(".claude.json", { gh: STDIO });
-    await writeAgentJson(".cursor/mcp.json", { gh: STDIO, lin: HTTP });
+    await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: STDIO, lin: HTTP });
 
     const r = await runDoctor();
     expect(r.coverage.find((c) => c.name === "gh")?.present.sort()).toEqual(["claude-code", "cursor"]);
@@ -535,8 +511,8 @@ describe("runDoctor", () => {
   test("reports conflicts", async () => {
     const v1: McpServer = { type: "stdio", command: "a" };
     const v2: McpServer = { type: "stdio", command: "b" };
-    await writeAgentJson(".claude.json", { dup: v1 });
-    await writeAgentJson(".cursor/mcp.json", { dup: v2 });
+    await writeAgentJson(workDir, ".claude.json", { dup: v1 });
+    await writeAgentJson(workDir, ".cursor/mcp.json", { dup: v2 });
 
     const r = await runDoctor();
     expect(r.conflicts).toHaveLength(1);
@@ -633,7 +609,7 @@ describe("claude per-project scope merge", () => {
   });
 
   test("runSync surfaces per-project Claude servers to other agents", async () => {
-    await writeAgentJson(".claude.json", {}, {
+    await writeAgentJson(workDir, ".claude.json", {}, {
       projects: { "/Users/me": { mcpServers: { stuck: STDIO } } },
     });
     const r = await runSync({ skipSkills: true });

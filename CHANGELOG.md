@@ -2,6 +2,12 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.16.0] — 2026-08-02
+
+### Added
+- **Plugin-first runtime lifecycle reconciliation.** `syncthis run` now inventories plugin sources and native runtime state, installs or repairs verified activation on Claude Code, Codex, and GitHub Copilot CLI, and pushes Cursor through its write-only installer.
+- **Exact, fail-closed degradation.** Unsupported artifact/target pairs receive only the bundled skills and MCP servers they can use; unreadable or unverifiable native activation remains a surfaced failure. MCP union sync and the skills refresh run after plugin reconciliation.
+
 ## [0.15.1] — 2026-06-09
 
 ### Fixed

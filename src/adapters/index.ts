@@ -1,4 +1,4 @@
-import type { Adapter } from "../types.ts";
+import type { Adapter, AgentId } from "../types.ts";
 import { claudeAdapter } from "./claude.ts";
 import { cursorAdapter } from "./cursor.ts";
 import { codexAdapter } from "./codex.ts";
@@ -26,3 +26,11 @@ export const adapters: Adapter[] = [
   hermesAdapter,
   gooseAdapter,
 ];
+
+export function findAdapter(id: AgentId): Adapter | undefined {
+  return adapters.find((adapter) => adapter.id === id);
+}
+
+export function listAgentIds(): AgentId[] {
+  return adapters.map((adapter) => adapter.id);
+}

@@ -1,6 +1,13 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,11 +25,60 @@ afterEach(async () => {
 });
 
 function run(args: string[]) {
-  const r = spawnSync("bun", [BIN, ...args], {
+  const r = spawnSync(process.execPath, [BIN, ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), NO_COLOR: "1" },
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_CONFIG_HOME: join(home, ".config"),
+      PATH: join(home, "empty-bin"),
+      NO_COLOR: "1",
+    },
   });
   return { code: r.status ?? -1, out: r.stdout ?? "", err: r.stderr ?? "" };
+}
+
+async function installPluginMcpFixture(config: string): Promise<string> {
+  const pluginRoot = join(home, "plugins", "foo");
+  await mkdir(pluginRoot, { recursive: true });
+  await writeFile(
+    join(pluginRoot, ".mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        owned: { command: "plugin-command" },
+      },
+    }),
+  );
+
+  const binDir = join(home, "empty-bin");
+  await mkdir(binDir, { recursive: true });
+  const claudeList = join(home, "claude-list.json");
+  await writeFile(
+    claudeList,
+    JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: pluginRoot }]),
+  );
+  await writeFile(
+    join(binDir, "claude"),
+    `#!/bin/sh
+if [ "$1 $2 $3" = "plugin list --json" ]; then /bin/cat "${claudeList}"; exit 0; fi
+if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then echo "[]"; exit 0; fi
+exit 0
+`,
+  );
+  await chmod(join(binDir, "claude"), 0o755);
+  await writeFile(
+    join(binDir, "npx"),
+    `#!/bin/sh
+if [ "$2 $3" = "skills list" ]; then echo "[]"; exit 0; fi
+exit 0
+`,
+  );
+  await chmod(join(binDir, "npx"), 0o755);
+
+  const configPath = join(home, ".config", "opencode", "opencode.json");
+  await mkdir(join(configPath, ".."), { recursive: true });
+  await writeFile(configPath, config);
+  return configPath;
 }
 
 describe("noun-first help", () => {
@@ -36,6 +92,8 @@ describe("noun-first help", () => {
     // Legacy forms still work but are not advertised in the top-level help.
     expect(out).not.toContain("selective add / remove");
     expect(out).not.toContain("syncthis mirror <primary>");
+    expect(out).toContain("MCP fallback still run");
+    expect(out).not.toContain("Automatic targeted fallback is not yet applied");
   });
 
   test("scoped help per noun", () => {
@@ -100,6 +158,79 @@ describe("alias equivalence — new noun-first form === legacy form", () => {
   });
 });
 
+describe("plugin uninstall MCP reporting", () => {
+  test("dry-run previews the exact degraded MCP removal without writing", async () => {
+    const configPath = await installPluginMcpFixture(
+      JSON.stringify({
+        mcp: {
+          owned: { type: "local", command: ["plugin-command"] },
+          keep: { type: "local", command: ["keep-command"] },
+        },
+      }),
+    );
+    const before = await readFile(configPath, "utf8");
+
+    const result = run([
+      "plugins",
+      "rm",
+      "foo",
+      "--agents",
+      "opencode",
+      "--dry-run",
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("1 MCP server: owned");
+    expect(result.out).toContain("dry-run");
+    expect(await readFile(configPath, "utf8")).toBe(before);
+  });
+
+  test("apply renders a successful degraded MCP removal", async () => {
+    const configPath = await installPluginMcpFixture(
+      JSON.stringify({
+        mcp: {
+          owned: { type: "local", command: ["plugin-command"] },
+          keep: { type: "local", command: ["keep-command"] },
+        },
+      }),
+    );
+
+    const result = run([
+      "plugins",
+      "rm",
+      "foo",
+      "--agents",
+      "opencode",
+      "--yes",
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("removed 1 MCP server: owned");
+    const current = JSON.parse(await readFile(configPath, "utf8")) as {
+      mcp: Record<string, unknown>;
+    };
+    expect(current.mcp.owned).toBeUndefined();
+    expect(current.mcp.keep).toBeDefined();
+  });
+
+  test("apply renders an MCP failure and exits nonzero", async () => {
+    await installPluginMcpFixture("{not json");
+
+    const result = run([
+      "plugins",
+      "rm",
+      "foo",
+      "--agents",
+      "opencode",
+      "--yes",
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("mcp:");
+    expect(result.out).toContain("failed");
+  });
+});
+
 describe("verb / directional disambiguation (KTD-4)", () => {
   test("`mcp from` is fan-out, not a directional mirror from an agent named 'from'", () => {
     // Fan-out requires --all; without it, fan-out errors. A directional parse would instead
@@ -115,6 +246,18 @@ describe("verb / directional disambiguation (KTD-4)", () => {
     expect(r.code).toBe(0);
     // union sync header (not a directional 'Mirror … →' header)
     expect(r.out).toContain("server name(s) across");
+    expect(r.out).not.toContain("plugins:");
+    expect(r.out).not.toContain("plugin fallback:");
+  });
+});
+
+describe("top-level command registry", () => {
+  test("inherited object property names remain unknown commands", () => {
+    for (const command of ["constructor", "__proto__"]) {
+      const result = run([command]);
+      expect(result.code).toBe(2);
+      expect(result.err).toContain(`unknown command: ${command}`);
+    }
   });
 });
 

@@ -1,18 +1,17 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { adapters } from "./adapters/index.ts";
 import { expandHome, readJson } from "./io.ts";
 import { isSafeRepoSlug, isSafeSkillName, pluginNamesOverlap, run } from "./plugins/shell.ts";
 import type { AgentId } from "./types.ts";
 
-// Agents that consume the open-plugin bundle natively — Claude (`claude plugin`),
-// Codex (`codex plugin`), Cursor (`npx plugins --target cursor`). They receive the
-// FULL plugin (skills + commands + subagents + MCP), so we never re-add a plugin's
-// skills to them as loose, un-namespaced skills: that would duplicate what the
-// plugin already provides and reintroduce cross-plugin name collisions that the
-// `plugin:skill` namespace was preventing.
+// Agents that ALWAYS consume the open-plugin bundle natively in these flows.
+// GitHub Copilot also has a native plugin ABI, but remains in the loose cohorts as
+// a conditional fallback: add/mirror removes a plugin/repo only after that exact
+// native install succeeds. Kimi has no proven non-interactive native plugin ABI and
+// therefore remains an unconditional exact skills/MCP degradation target.
 export const PLUGIN_TARGET_AGENTS: readonly AgentId[] = ["claude-code", "codex", "cursor"];
 
 // Agents that support skills (vercel-labs/skills) but have NO native MCP config to
@@ -485,6 +484,28 @@ export async function addSkillRepos(
       continue;
     }
     out.push(await addOne(repo, agents));
+  }
+  return out;
+}
+
+// Install skills from exact, caller-validated sources. Repository slugs keep the
+// existing network path; absolute paths support inspected local plugin artifacts
+// without broadening addSkillRepos' public repo-only safety contract.
+export async function addSkillSources(
+  sources: string[],
+  agents: readonly AgentId[],
+  opts: { dryRun?: boolean } = {},
+): Promise<SkillAddResult[]> {
+  const unique = [
+    ...new Set(sources.filter((source) => isSafeRepoSlug(source) || isAbsolute(source))),
+  ].sort();
+  const out: SkillAddResult[] = [];
+  for (const source of unique) {
+    if (opts.dryRun) {
+      out.push({ repo: source, status: "added", message: "dry-run" });
+      continue;
+    }
+    out.push(await addOne(source, agents));
   }
   return out;
 }

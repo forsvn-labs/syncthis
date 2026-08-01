@@ -17,13 +17,16 @@ let workDir: string;
 let originalHome: string | undefined;
 let originalPath: string | undefined;
 let originalXdg: string | undefined;
+let originalCopilotHome: string | undefined;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "syncthis-mir-"));
   originalHome = process.env.HOME;
   originalPath = process.env.PATH;
   originalXdg = process.env.XDG_CONFIG_HOME;
+  originalCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = workDir;
+  process.env.COPILOT_HOME = join(workDir, "copilot");
   // Goose honors XDG_CONFIG_HOME unconditionally; clear it so the mirror's MCP-cohort
   // write to goose lands under the temp HOME, not the real ~/.config.
   delete process.env.XDG_CONFIG_HOME;
@@ -34,6 +37,8 @@ afterEach(async () => {
   process.env.PATH = originalPath;
   if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalXdg;
+  if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+  else process.env.COPILOT_HOME = originalCopilotHome;
   await rm(workDir, { recursive: true, force: true });
 });
 
@@ -42,15 +47,54 @@ async function installFakeCli(name: "claude" | "codex", listOutput: string) {
   await mkdir(binDir, { recursive: true });
   const listFile = join(workDir, `${name}-list.json`);
   await writeFile(listFile, listOutput);
+  if (name === "claude") {
+    const nativeNames = listOutput
+      ? (JSON.parse(listOutput) as Array<{ id: string }>).map(({ id }) => id.split("@")[0]!)
+      : [];
+    await mkdir(process.env.COPILOT_HOME!, { recursive: true });
+    await writeFile(
+      join(process.env.COPILOT_HOME!, "config.json"),
+      JSON.stringify({
+        installedPlugins: nativeNames.map((pluginName) => ({
+          name: pluginName,
+          enabled: true,
+          cache_path: join(workDir, "native", pluginName),
+        })),
+      }),
+    );
+    const copilot = join(binDir, "copilot");
+    await writeFile(
+      copilot,
+      `#!/bin/sh
+echo "copilot $@" >> ${join(workDir, "invocations.log")}
+if [ "$1 $2" = "plugin list" ]; then
+${nativeNames.map((pluginName) => `  echo "  • ${pluginName} (v1.0.0)"`).join("\n")}
+  ${nativeNames.length === 0 ? 'echo "No plugins installed."' : ""}
+  exit 0
+fi
+exit 1
+`,
+    );
+    await chmod(copilot, 0o755);
+  }
   const log = join(workDir, "invocations.log");
   const listMatch =
     name === "claude"
       ? `if [ "$1 $2 $3" = "plugin list --json" ]; then cat ${listFile}; exit 0; fi
 if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then echo "[]"; exit 0; fi`
       : `if [ "$1 $2" = "plugin list" ]; then cat ${listFile}; exit 0; fi`;
+  const addMatch =
+    name === "codex"
+      ? `if [ "$1 $2" = "plugin add" ]; then
+  awk -v id="$4" 'index($0, id) == 1 { sub(/not installed/, "installed    ") } { print }' ${listFile} > ${listFile}.next
+  mv ${listFile}.next ${listFile}
+  exit 0
+fi`
+      : "";
   const script = `#!/bin/sh
 echo "${name} $@" >> ${log}
 ${listMatch}
+${addMatch}
 exit 0
 `;
   const p = join(binDir, name);

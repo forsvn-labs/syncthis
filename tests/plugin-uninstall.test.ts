@@ -49,19 +49,27 @@ function codexTable(rows: CodexRow[]): string {
 // `listExit` makes `plugin list --json` fail, exercising the unreadable-Claude path.
 async function installFakeClaude(
   listJson: string,
-  opts: { uninstallExit?: number; uninstallStderr?: string; listExit?: number } = {},
+  opts: { uninstallExit?: number; uninstallStderr?: string; listExit?: number; confirmUninstall?: boolean } = {},
 ) {
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
   const listFile = join(workDir, "claude-list.json");
+  const removedListFile = join(workDir, "claude-list-removed.json");
   await writeFile(listFile, listJson);
+  await writeFile(removedListFile, "[]");
   const stderr = (opts.uninstallStderr ?? "fake uninstall failure").replace(/`/g, "\\`");
   const listBranch = opts.listExit != null ? `echo "claude list boom" >&2; exit ${opts.listExit}` : `cat ${listFile}; exit 0`;
   const script = `#!/bin/sh
 echo "claude $@" >> ${invocationsFile}
 if [ "$1 $2 $3" = "plugin list --json" ]; then ${listBranch}; fi
 if [ "$1 $2 $3 $4" = "plugin marketplace list --json" ]; then echo "[]"; exit 0; fi
-if [ "$1 $2" = "plugin uninstall" ]; then ${opts.uninstallExit != null ? `echo "${stderr}" >&2; exit ${opts.uninstallExit}` : "exit 0"}; fi
+if [ "$1 $2" = "plugin uninstall" ]; then ${
+    opts.uninstallExit != null
+      ? `echo "${stderr}" >&2; exit ${opts.uninstallExit}`
+      : opts.confirmUninstall === false
+        ? "exit 0"
+        : `cp ${removedListFile} ${listFile}; exit 0`
+  }; fi
 exit 0
 `;
   const p = join(binDir, "claude");
@@ -135,6 +143,13 @@ describe("claude uninstallPlugin", () => {
     const res = await claudePluginAdapter.uninstallPlugin("foo", { dryRun: false, marketplace: "mkt" });
     expect(res.status).toBe("uninstalled");
     expect((await readInvocations()).some((l) => l.trim() === "claude plugin uninstall --yes -- foo@mkt")).toBe(true);
+  });
+
+  test("fails when uninstall exits zero but a fresh list still contains the plugin", async () => {
+    await installFakeClaude(JSON.stringify([{ id: "foo@mkt", enabled: true }]), { confirmUninstall: false });
+    const res = await claudePluginAdapter.uninstallPlugin("foo", { dryRun: false, marketplace: "mkt" });
+    expect(res.status).toBe("failed");
+    expect(res.message).toMatch(/fresh|verify|installed/i);
   });
 
   test("passes --keep-data before the separator when requested", async () => {
@@ -385,6 +400,121 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect((await readInvocations()).some((l) => l.trim() === "npx -y skills remove -g -a opencode -s convex-best-practices -y")).toBe(true);
   });
 
+  test("dry-run and apply remove exact degraded MCP while preserving modified conflicts", async () => {
+    const fooDir = join(workDir, "plugins", "foo");
+    await writePluginSkills(fooDir, ["alpha"]);
+    await writeFile(
+      join(fooDir, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          owned: { command: "plugin-command" },
+          modified: { command: "plugin-command" },
+        },
+      }),
+    );
+    await installFakeClaude(
+      JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: fooDir }]),
+    );
+    await installFakeNpx({
+      listJson: '[{"name":"alpha","agents":["OpenCode"]}]',
+      removeExit: 0,
+    });
+    const opencodePath = join(workDir, ".config", "opencode", "opencode.json");
+    await mkdir(join(opencodePath, ".."), { recursive: true });
+    await writeFile(
+      opencodePath,
+      JSON.stringify({
+        mcp: {
+          owned: { type: "local", command: ["plugin-command"] },
+          modified: { type: "local", command: ["user-command"] },
+          keep: { type: "local", command: ["keep-command"] },
+        },
+      }),
+    );
+    const before = await readFile(opencodePath, "utf8");
+
+    const preview = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["opencode"],
+      apply: false,
+    });
+
+    expect(preview.mcp).toEqual([
+      expect.objectContaining({
+        agent: "opencode",
+        names: ["owned"],
+        conflicts: ["modified"],
+      }),
+    ]);
+    expect(await readFile(opencodePath, "utf8")).toBe(before);
+    expect(
+      (await readInvocations()).some((line) =>
+        /skills remove|plugin uninstall|plugin remove/.test(line)
+      ),
+    ).toBe(false);
+
+    const applied = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["opencode"],
+      apply: true,
+    });
+    expect(applied.mcpResults).toContainEqual(
+      expect.objectContaining({
+        agent: "opencode",
+        removed: ["owned"],
+        conflicts: ["modified"],
+        status: "synced",
+      }),
+    );
+    const current = JSON.parse(await readFile(opencodePath, "utf8")) as {
+      mcp: Record<string, unknown>;
+    };
+    expect(current.mcp.owned).toBeUndefined();
+    expect(current.mcp.modified).toEqual({
+      type: "local",
+      command: ["user-command"],
+    });
+    expect(current.mcp.keep).toBeDefined();
+  });
+
+  test("an unreadable degraded MCP target is a reported failure and is never mutated", async () => {
+    const fooDir = join(workDir, "plugins", "foo");
+    await mkdir(fooDir, { recursive: true });
+    await writeFile(
+      join(fooDir, ".mcp.json"),
+      JSON.stringify({ mcpServers: { owned: { command: "plugin-command" } } }),
+    );
+    await installFakeClaude(
+      JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: fooDir }]),
+    );
+    await installFakeNpx({ listJson: "[]" });
+    const opencodePath = join(workDir, ".config", "opencode", "opencode.json");
+    await mkdir(join(opencodePath, ".."), { recursive: true });
+    await writeFile(opencodePath, "{not json");
+
+    const report = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["opencode"],
+      apply: true,
+    });
+
+    expect(report.mcp).toEqual([
+      expect.objectContaining({
+        agent: "opencode",
+        names: [],
+        unreadable: expect.any(String),
+      }),
+    ]);
+    expect(report.mcpResults).toEqual([
+      expect.objectContaining({
+        agent: "opencode",
+        status: "failed",
+        removed: [],
+      }),
+    ]);
+    expect(await readFile(opencodePath, "utf8")).toBe("{not json");
+  });
+
   test("matches Codex's sanitized github-com plugin name for native uninstall", async () => {
     await installFakeClaude(JSON.stringify([{ id: "github.com-owner-tool@mkt", enabled: true, installPath: join(workDir, "plugins", "tool") }]));
     await installFakeCodex(codexTable([["github-com-owner-tool@plugins-cli", "installed, enabled", "1.0.0", "/c/tool"]]));
@@ -433,6 +563,17 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect(r.skillScope).toEqual(["codex"]); // codex IS a skill-removal candidate…
     expect(r.requiredSkillAgents).toEqual([]); // …but not a *required* one (native covers it)
     expect(r.nativeResults?.find((x) => x.agent === "codex")?.status).toBe("uninstalled");
+  });
+
+  test("codex loose-fallback-only scope is skill-blocked when Claude is unreadable", async () => {
+    await installFakeClaude("[]", { listExit: 1 });
+    await installFakeCodex(codexTable([["other@mkt", "installed, enabled", "1.0.0", "/c/other"]]));
+    await installFakeNpx({ listJson: "[]" });
+    const r = await runPluginUninstall({ plugins: ["foo"], agents: ["codex"], apply: false });
+    expect(r.claudeReadError).toBeTruthy();
+    expect(r.skillScope).toEqual(["codex"]);
+    expect(r.native.find((target) => target.agent === "codex")?.present).toBe(false);
+    expect(r.requiredSkillAgents).toEqual(["codex"]);
   });
 
   test("cursor is reported unsupported, nothing to do when the plugin is absent everywhere", async () => {

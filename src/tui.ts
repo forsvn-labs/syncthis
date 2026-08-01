@@ -1,8 +1,7 @@
 import { MultiSelectPrompt } from "@clack/core";
 import { intro, outro, select, text, isCancel, cancel, log, note, spinner } from "@clack/prompts";
+import { findAdapter, listAgentIds } from "./adapters/index.ts";
 import {
-  findAdapter,
-  listAgentIds,
   runRemove,
   runSelectiveMcpSync,
   runSkillsOnly,
@@ -327,7 +326,7 @@ async function allAvailablePluginItems(installed: PluginRecord[]): Promise<Picke
 }
 
 async function removePlugins() {
-  flowHeader(["Plugins", "Remove"], "Guarded uninstall: removes the native plugin (claude/codex) and its surfaced skills (other agents). You'll preview the exact changes and confirm before anything is removed.");
+  flowHeader(["Plugins", "Remove"], "Guarded uninstall: removes the native plugin and its exact surfaced skills/MCP servers. You'll preview the exact changes and confirm before anything is removed.");
   const reads = await listPlugins();
   const names = dedupe(reads.flatMap((r) => (r.error ? [] : r.plugins.map((p) => p.name)))).sort();
   if (names.length === 0) {
@@ -353,11 +352,24 @@ async function removePlugins() {
     log.info(`remove ${preview.skills.names.length} surfaced skill(s) from ${preview.skills.agents.length} agent(s): ${preview.skills.names.join(", ")}`);
   }
   if (preview.skills.kept.length) log.info(`keeping (still provided by another plugin): ${preview.skills.kept.join(", ")}`);
+  for (const target of preview.mcp) {
+    if (target.unreadable) {
+      log.warn(`${target.agent}: MCP target unreadable (${target.unreadable})`);
+    } else if (target.names.length) {
+      log.info(`remove ${target.names.length} surfaced MCP server(s) from ${target.agent}: ${target.names.join(", ")}`);
+    }
+    if (target.kept.length) {
+      log.info(`${target.agent}: keeping MCP still provided by another plugin: ${target.kept.join(", ")}`);
+    }
+    if (target.conflicts.length) {
+      log.warn(`${target.agent}: modified MCP left untouched: ${target.conflicts.join(", ")}`);
+    }
+  }
   if (preview.claudeReadError && preview.skillScope.length) {
     log.warn(`couldn't read Claude's plugins (${preview.claudeReadError}) - surfaced skills on ${preview.skillScope.join(", ")} can't be resolved and will be left in place`);
   }
 
-  if (!(await confirmYes("apply? this uninstalls plugins and removes their surfaced skills."))) return;
+  if (!(await confirmYes("apply? this uninstalls plugins and removes their exact surfaced skills/MCP servers."))) return;
 
   const s = spinner();
   s.start("Removing plugins...");
@@ -381,6 +393,18 @@ async function removePlugins() {
   if (applied.skillResult) {
     if (applied.skillResult.status === "removed") removed += applied.skillResult.skills.length;
     else if (applied.skillResult.status === "failed") failed += 1;
+  }
+  for (const result of applied.mcpResults ?? []) {
+    if (result.status === "synced") {
+      removed += result.removed.length;
+      log.info(`${result.agent}: removed ${result.removed.length} MCP server(s): ${result.removed.join(", ")}`);
+    } else if (result.status === "failed") {
+      failed += 1;
+      log.error(`${result.agent}: MCP removal failed (${result.message ?? "unknown error"})`);
+    }
+    if (result.conflicts.length) {
+      log.warn(`${result.agent}: modified MCP left untouched: ${result.conflicts.join(", ")}`);
+    }
   }
   if (applied.claudeReadError && applied.skillScope.length) {
     const who = applied.requiredSkillAgents.length ? applied.requiredSkillAgents : applied.skillScope;

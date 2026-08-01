@@ -1,6 +1,6 @@
 import { adapters } from "./adapters/index.ts";
-import { computeUnion, type Conflict } from "./sync.ts";
 import { expandHome, readJson } from "./io.ts";
+import { computeUnion, type Conflict } from "./mcp-state.ts";
 import type { AdapterRead, AgentId } from "./types.ts";
 
 export type UnmanagedMcpConfig = {

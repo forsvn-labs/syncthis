@@ -1,21 +1,69 @@
 import { spawn } from "node:child_process";
-import { adapters } from "./adapters/index.ts";
-import { addSkillsFromPlugins, skillCohort, type PluginSkillsReport } from "./skills.ts";
-import type { Adapter, AdapterRead, AdapterWriteResult, AgentId, McpServer } from "./types.ts";
+import { adapters, findAdapter } from "./adapters/index.ts";
+import {
+  computeUnion,
+  diffServers,
+  type Conflict,
+  type DirectionalDiff,
+} from "./mcp-state.ts";
+import {
+  runPluginDegradation,
+  type PluginDegradationReport,
+  type RunPluginDegradationOptions,
+} from "./plugins/degrade.ts";
+import {
+  runPluginReconcile,
+  type PluginReconcileReport,
+  type PluginReconcileTarget,
+  type RunPluginReconcileOptions,
+} from "./plugins/reconcile.ts";
+import { pluginReconcileTargets } from "./plugins/targets.ts";
+import type { PluginSkillsReport } from "./skills.ts";
+import type { AdapterRead, AdapterWriteResult, AgentId, McpServer } from "./types.ts";
 
 const SKILLS_UPDATE_TIMEOUT_MS = 120_000;
 
-type SyncOptions = {
+// Compatibility facade: canonical implementations live below the composition
+// root so plugin services never need to import sync.ts.
+export { computeUnion, diffServers, findAdapter };
+export { listAgentIds } from "./adapters/index.ts";
+export { pluginReconcileTargets as syncPluginTargets };
+export type { Conflict, DirectionalDiff };
+
+export type SyncOptions = {
   dryRun?: boolean;
   skipSkills?: boolean;
+  /** Internal MCP-only mode; unlike --no-skills, this suppresses plugin reconciliation. */
+  skipPlugins?: boolean;
   onPluginSkillProgress?: (repo: string, i: number, total: number) => void;
+  /** Test/control-plane injection; production defaults to the native reconciler. */
+  reconcilePlugins?: (opts: RunPluginReconcileOptions) => Promise<PluginReconcileReport>;
+  /** Test/control-plane injection; production defaults to targeted degradation. */
+  degradePlugins?: (opts: RunPluginDegradationOptions) => Promise<PluginDegradationReport>;
+  pluginTargets?: PluginReconcileTarget[];
 };
 
-export type DirectionalDiff = {
-  add: string[];
-  overwrite: string[];
-  remove: string[];
-};
+function skippedPluginReconcileReport(dryRun: boolean): PluginReconcileReport {
+  return {
+    dryRun,
+    inventory: { artifacts: [], sources: [], errors: [] },
+    results: [],
+    failures: [],
+    hasFailures: false,
+    hasChanges: false,
+  };
+}
+
+function skippedPluginDegradationReport(dryRun: boolean): PluginDegradationReport {
+  return {
+    dryRun,
+    eligibleOutcomes: [],
+    results: [],
+    failures: [],
+    hasFailures: false,
+    hasChanges: false,
+  };
+}
 
 export type DirectionalReport = {
   from: AgentId;
@@ -65,12 +113,10 @@ export type RemoveReport = {
   writes: AdapterWriteResult[];
 };
 
-export type Conflict = {
-  name: string;
-  versions: { agent: AgentId; server: McpServer }[];
-};
-
 export type SyncReport = {
+  ok: boolean;
+  plugins: PluginReconcileReport;
+  pluginDegradation: PluginDegradationReport;
   reads: AdapterRead[];
   union: Record<string, McpServer>;
   conflicts: Conflict[];
@@ -79,77 +125,20 @@ export type SyncReport = {
   skills?: { ran: boolean; ok: boolean; message?: string };
 };
 
-function canonical(s: McpServer): string {
-  return JSON.stringify(sortKeys(canonicalShape(s)));
-}
-
-// Canonical identity used for conflict/equality detection (computeUnion + diffServers).
-//
-// Two things are deliberately collapsed so the detector doesn't fire on differences
-// that aren't real:
-//   1. Empty containers — adapters disagree on round-tripping `args: []`/`env: {}`
-//      (OpenCode drops them, canonical-schema adapters keep them). Omit when empty.
-//   2. URL transport subtype (http / sse / streamable-http). Several agents
-//      (windsurf, copilot, hermes, opencode) have no field for it and ALWAYS read a
-//      URL server back as "http". If transport were part of the identity, the first
-//      sync would write an sse server to those agents, they'd report it back as http,
-//      and the SECOND sync would see sse-vs-http for the same name and raise a
-//      conflict the user can never resolve (re-running just recreates it). The URL is
-//      the server's identity; transport is not faithfully syncable, so it's excluded.
-//      The propagated union value still keeps its original `type` (see computeUnion),
-//      so transport-capable agents retain whatever the source agent had.
-function canonicalShape(s: McpServer): Record<string, unknown> {
-  if ("url" in s) {
-    const out: Record<string, unknown> = { kind: "url", url: s.url };
-    if (s.headers && Object.keys(s.headers).length > 0) out.headers = s.headers;
-    return out;
-  }
-  const out: Record<string, unknown> = { kind: "stdio", command: s.command };
-  if (s.args && s.args.length > 0) out.args = s.args;
-  if (s.env && Object.keys(s.env).length > 0) out.env = s.env;
-  if (s.cwd) out.cwd = s.cwd;
-  return out;
-}
-
-function sortKeys(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(sortKeys);
-  if (v && typeof v === "object") {
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(v as object).sort()) {
-      out[k] = sortKeys((v as Record<string, unknown>)[k]);
-    }
-    return out;
-  }
-  return v;
-}
-
-export function computeUnion(reads: AdapterRead[]): {
-  union: Record<string, McpServer>;
-  conflicts: Conflict[];
-} {
-  const versions = new Map<string, { agent: AgentId; server: McpServer }[]>();
-  for (const r of reads) {
-    for (const [name, server] of Object.entries(r.servers)) {
-      const list = versions.get(name) ?? [];
-      list.push({ agent: r.agent, server });
-      versions.set(name, list);
-    }
-  }
-  const union: Record<string, McpServer> = {};
-  const conflicts: Conflict[] = [];
-  for (const [name, vs] of versions) {
-    const distinct = new Set(vs.map((v) => canonical(v.server)));
-    if (distinct.size === 1) {
-      union[name] = vs[0]!.server;
-    } else {
-      conflicts.push({ name, versions: vs });
-    }
-  }
-  return { union, conflicts };
-}
-
 export async function runSync(opts: SyncOptions = {}): Promise<SyncReport> {
   const dryRun = opts.dryRun ?? false;
+  const reconcile = opts.reconcilePlugins ?? runPluginReconcile;
+  const degrade = opts.degradePlugins ?? runPluginDegradation;
+  // Plugin activation is resolved first. MCP union remains independent and still
+  // runs after plugin failures so one broken runtime cannot block healthy MCP
+  // propagation to every other agent.
+  const plugins = opts.skipPlugins
+    ? skippedPluginReconcileReport(dryRun)
+    : await reconcile({
+        dryRun,
+        targets: opts.pluginTargets ?? pluginReconcileTargets(),
+      });
+
   const reads = await Promise.all(adapters.map((a) => a.read()));
   const { union, conflicts } = computeUnion(reads);
   const conflictNames = new Set(conflicts.map((c) => c.name));
@@ -175,46 +164,57 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncReport> {
     }),
   );
 
-  const report: SyncReport = { reads, union, conflicts, writes };
+  // Native activation and the MCP union own their primary paths first. Only then
+  // apply explicit per-artifact/per-agent fallback decisions; the degradation
+  // executor is additive and cannot fan content back into successful native
+  // targets. --no-skills suppresses only its loose-skill component.
+  const pluginDegradation = opts.skipPlugins
+    ? skippedPluginDegradationReport(dryRun)
+    : await degrade({
+        reconcile: plugins,
+        includeSkills: !opts.skipSkills,
+        includeMcp: true,
+      });
+
+  const report: SyncReport = {
+    ok: true,
+    plugins,
+    pluginDegradation,
+    reads,
+    union,
+    conflicts,
+    writes,
+  };
 
   if (opts.skipSkills) {
-    report.pluginSkills = { ran: false, dryRun, agents: skillCohort(), sources: [], results: [], message: "skipped (--no-skills)" };
     report.skills = { ran: false, ok: true, message: "skipped (--no-skills)" };
+    report.ok = !syncHasFailures(report);
     return report;
   }
 
-  // Surface plugin-bundled skills to the non-plugin agents BEFORE refreshing, so
-  // a freshly added skill is picked up by the same run. On dry-run this only
-  // resolves + reports the source repos (no `npx skills add` invoked).
-  report.pluginSkills = await addSkillsFromPlugins({ dryRun, onProgress: opts.onPluginSkillProgress });
   report.skills = dryRun ? { ran: false, ok: true, message: "skipped (dry-run)" } : await runSkillsUpdate();
+  report.ok = !syncHasFailures(report);
 
   return report;
 }
 
-export function findAdapter(id: AgentId): Adapter | undefined {
-  return adapters.find((a) => a.id === id);
+export function syncFailureCount(report: SyncReport): number {
+  const writeFailures = report.writes.filter((write) => write.status === "failed").length;
+  const pluginFailures = report.plugins.failures.length;
+  // Missing native CLIs are actionable only when an eligible artifact targets
+  // them; that case already appears in `pluginFailures`. Do not make an otherwise
+  // empty sync fail merely because an optional agent runtime is not installed.
+  const inventoryFailures = report.plugins.inventory.errors.filter(
+    (error) => error.source !== "native-runtime",
+  ).length;
+  const degradationFailures = report.pluginDegradation.failures.length;
+  const pluginSkillFailures = report.pluginSkills?.results.filter((result) => result.status === "failed").length ?? 0;
+  const skillsFailure = report.skills?.ran && !report.skills.ok ? 1 : 0;
+  return writeFailures + pluginFailures + inventoryFailures + degradationFailures + pluginSkillFailures + skillsFailure;
 }
 
-export function listAgentIds(): AgentId[] {
-  return adapters.map((a) => a.id);
-}
-
-export function diffServers(
-  from: Record<string, McpServer>,
-  to: Record<string, McpServer>,
-): DirectionalDiff {
-  const add: string[] = [];
-  const overwrite: string[] = [];
-  const remove: string[] = [];
-  for (const [name, server] of Object.entries(from)) {
-    if (!(name in to)) add.push(name);
-    else if (canonical(server) !== canonical(to[name]!)) overwrite.push(name);
-  }
-  for (const name of Object.keys(to)) {
-    if (!(name in from)) remove.push(name);
-  }
-  return { add: add.sort(), overwrite: overwrite.sort(), remove: remove.sort() };
+export function syncHasFailures(report: SyncReport): boolean {
+  return syncFailureCount(report) > 0;
 }
 
 type DirectionalOptions = {

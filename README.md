@@ -8,16 +8,16 @@
 
 ![syncthis mcp sync — union MCP servers across every agent](./docs/demos/out/mcp-sync.gif)
 
-**Install a plugin once on Claude — syncthis propagates its skills and MCP servers to every other agent. Plus cross-agent MCP and skills sync.**
+**Install a plugin once — syncthis validates native activation wherever possible, then carries only the unsupported parts to the agents that need them. Plus cross-agent MCP and skills sync.**
 
-A Claude Code plugin bundles skills, MCP servers, and more — but only Claude and Codex can install one; the other ten agents are left out. syncthis decomposes a plugin and lifts its skills and MCP servers into every other agent's own config, by the best mechanism each supports: **one install on Claude, reachable everywhere — the only tool that understands plugin bundles.**
+A plugin can bundle skills, MCP servers, and more. syncthis inventories the external `plugins`/plugins-cli catalogue plus each native runtime, installs or repairs missing native activation on **Claude Code, Codex, and GitHub Copilot CLI**, and pushes **Cursor** through its write-only plugin installer. Kimi CLI and other agents without a proven native plugin ABI receive only the exact bundle components they can use.
 
 It does the same for raw MCP servers. Every coding agent stores them in its own file, its own format, its own path, so a server added to Claude Code is invisible to the other eleven. syncthis reads all of them, computes the union, and writes it back: **one command puts every server in every agent.**
 
-You install MCPs, plugins, and skills with whatever tool you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync layer on top. It does three things and nothing more:
+You can still install MCPs, plugins, and skills with the native tools you already use — `mcpm`, `claude mcp add`, `claude plugin install`, `npx plugins add`, `npx skills add`, and so on. syncthis is the sync and reconciliation layer on top:
 
 - **MCP servers** — union sync across all 12 agents: read every agent's config, compute the union, write it back, report conflicts.
-- **Plugins** — add one, a few, or all Claude-installed plugins to chosen agents, additively (never uninstalls). **Codex** gets native plugins (missing marketplaces auto-registered); **Cursor** is pushed by source repo via `npx plugins add --target cursor`; the **non-plugin agents** get the bundled skills via `npx skills add` **and** the bundled MCP servers, lifted into their own MCP config (additive, conflicts left untouched). Anything a target can't load as a plugin falls back to skills. `mirror` remains as a batch shortcut for every installed plugin.
+- **Plugins** — the flagship sync inventories plugins-cli and native runtime state, installs or repairs native activation on **Claude Code, Codex, and GitHub Copilot CLI**, and pushes **Cursor** by source repo. Loose skills and MCP servers are applied per artifact and per agent only when that agent has no proven native plugin ABI (including Kimi CLI) or the artifact format is positively unsupported.
 - **Skills** — delegated entirely to [`vercel-labs/skills`](https://github.com/vercel-labs/skills) (`npx skills update -y`), which handles 55 agents.
 
 Supported agents for MCP sync: **Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Kimi CLI, Windsurf, Antigravity, GitHub Copilot CLI, OpenClaw, Hermes, Goose** — 12 in total.
@@ -32,7 +32,7 @@ No install required — run it on demand:
 npx @hungv47/syncthis run
 ```
 
-That mirrors MCP servers across every detected agent, then refreshes skills via `npx skills update -y`. Add `--dry-run` to preview without writing.
+That reconciles native plugins first, mirrors MCP servers across every detected agent, applies any exact plugin degradation plan, then refreshes skills via `npx skills update -y`. Add `--dry-run` to preview without writing.
 
 > syncthis ships as a single self-contained bundle that runs on **Node ≥18 — no Bun required to use it**. (Bun is only needed to hack on the source.)
 
@@ -70,7 +70,7 @@ Reproducible recordings (regenerate with `docs/demos/build.sh` — see [`docs/de
 | ✅ refreshes skills via `npx skills update -y` | ❌ installs skills from registries (use `npx skills add`) |
 | ✅ supports one-way mirror and fan-out from one agent | ❌ starts desktop-owned MCP servers like Paper/Pencil |
 | ✅ removes one MCP server across every supported agent | ❌ treats legacy/unmanaged MCP files as source of truth |
-| ✅ propagates selected plugin content to chosen agents (plugins on Codex/Cursor; skills on the rest) | ❌ installs plugins from scratch (use `npx plugins add`, `claude plugin install`, etc.) |
+| ✅ installs or repairs native plugin activation on Claude/Codex/Copilot and pushes Cursor | ❌ treats an unreadable or unverifiable native install as successful fallback |
 | ✅ shows a cross-agent plugin overview (`plugin list`) | ❌ acts as a plugin source-of-truth — each agent's own config is the truth |
 | ✅ uninstalls a plugin everywhere — native plugin + surfaced skills (`plugin rm`, guarded) | ❌ deletes anything implicitly — removal only via the guarded `rm` / `plugin rm` commands |
 
@@ -82,7 +82,7 @@ mcpm install github
 npx skills add vercel-labs/agent-skills --skill frontend-design
 claude plugin install vercel-plugin@plugins-cli
 
-# 2. mirror MCP servers + refresh skills across every agent
+# 2. reconcile native plugins, apply exact degradation, mirror MCP servers, refresh skills
 syncthis run
 ```
 
@@ -96,14 +96,14 @@ The CLI is **noun-first** — three nouns (`plugins`, `skills`, `mcp`), each wit
 
 ```
 syncthis                              # interactive picker (or help if non-TTY)
-syncthis sync   [--dry-run] [--no-skills]   # flagship: MCP union + skills (alias: run)
+syncthis sync   [--dry-run] [--no-skills]   # flagship: plugin reconcile + MCP union + skills (alias: run)
 
-# Plugins → chosen agents (Codex/Cursor as plugins; non-plugin agents get skills + bundled MCPs). Additive.
+# Plugins → chosen agents (native on Claude/Codex/Copilot; Cursor write-only; exact degradation elsewhere).
 syncthis plugins list                       # cross-agent plugin overview (read-only)
 syncthis plugins mirror <primary> [--no-provision] [--yes] [--dry-run]  # every plugin from primary → all
 syncthis plugins add <name…> --all | --agents <a,b,c> [--dry-run]   # source = claude-code
 syncthis plugins rm  <name…> --all | --agents <a,b,c> [--yes] [--dry-run] [--keep-data]
-                                            # guarded uninstall: native plugin (claude/codex) + surfaced skills
+                                            # guarded uninstall: native plugin + surfaced skills
 
 syncthis skills update                      # `npx skills update -y`
 syncthis skills add <repo…> --all | --agents <a,b,c> [--dry-run]
@@ -129,8 +129,8 @@ syncthis help                               # noun-first overview
 > The earlier flat commands (`run`, `mirror`, `from`, `<from> <to>`, `add skill|plugin`, `rm mcp|skill|plugin`, `plugin list|rm`, bare `mcp`/`skills`) still work as unadvertised aliases — nothing breaks if you've scripted against them.
 
 `--dry-run` prints what would change without writing.
-`--no-skills` skips the skills update phase.
-`--no-provision` (mirror) skips registering missing Codex marketplaces and the Codex skills-fallback — Codex installs only the plugins it can already resolve. (The Cursor push and the non-plugin-agent skills push still run; those are the mirror's payload, not provisioning.) By default mirror provisions: it registers a plugin's source marketplace on the target (`npx plugins add` — hits the network), and adds bundles a target can't load as plugins as skills (`npx skills add`).
+`--no-skills` skips loose-skill degradation and the skills update phase; native plugin reconciliation and targeted MCP degradation still run.
+`--no-provision` (mirror) skips registering missing Codex marketplaces and the positively-skills-only Codex fallback — Codex installs only the plugins it can already resolve. (The Cursor push and exact non-plugin-agent degradation still run; those are the mirror's payload, not provisioning.) By default mirror provisions the source marketplace on the target and applies the Codex skills path only when source inspection positively identifies a skills-only bundle.
 `--all` is required for fan-out and remove-all commands.
 `--yes` skips the confirmation prompt for destructive commands.
 `syncthis update` runs the global latest install command (`npm install -g @hungv47/syncthis@latest`, or Bun's global install when the current executable comes from Bun).
@@ -141,7 +141,7 @@ syncthis help                               # noun-first overview
 |---|---|
 | `claude-code` | `~/.claude.json` (merges top-level + every `projects.*.mcpServers` scope) |
 | `cursor` | `~/.cursor/mcp.json` |
-| `codex` | `~/.codex/config.toml` |
+| `codex` | `~/.codex/config.toml` (root override via `$CODEX_HOME`) |
 | `gemini-cli` | `~/.gemini/settings.json` |
 | `kimi-cli` | `~/.kimi/mcp.json` |
 | `antigravity` | `~/.gemini/antigravity/mcp_config.json` |
@@ -156,10 +156,12 @@ Skills additionally reach **`pi`** (badlogic/pi-mono), which ships without nativ
 
 ## What `syncthis run` does
 
-1. **Reads** MCP servers from each agent's config. For Claude, merges top-level + every per-project scope.
-2. **Computes the union.** Any server present in any agent gets propagated to every agent.
-3. **Detects conflicts.** If the same server name has different configs across agents, syncthis leaves each agent's own version untouched and reports the conflict — you resolve manually.
-4. **Refreshes skills** by running `npx skills update -y`. Skills sync is delegated to `vercel-labs/skills`, which handles 55 agents.
+1. **Inventories plugin artifacts** from external plugins-cli state, Claude/Codex configuration, and the readable native runtimes.
+2. **Reconciles native activation.** Missing or configured-but-inactive plugins are installed or repaired on Claude Code, Codex, and GitHub Copilot CLI. Cursor is pushed through `npx plugins` as a write-only target; Kimi is classified as having no proven non-interactive native ABI.
+3. **Verifies readable native targets.** A fresh authoritative read must show the activated plugin. Read, install, capability-check, and verification errors remain failures; they never authorize loose fallback.
+4. **Reads and unions MCP servers.** For Claude, reads top-level + every per-project scope. Conflicting definitions remain untouched and are reported.
+5. **Applies exact degradation.** Bundled skills and MCP servers are surfaced only for the specific artifact/agent pair with no native plugin ABI, or when a readable artifact is positively identified as an unsupported native format. Successful native activation never receives duplicate loose content.
+6. **Refreshes skills** by running `npx skills update -y`. Skills sync is delegated to `vercel-labs/skills`, which handles 55 agents.
 
 ### Safe by design
 
@@ -220,14 +222,19 @@ syncthis rm executor --all --yes
 
 ## Plugins
 
-Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. The plugin sync flow makes one, a few, or all Claude-installed plugins reachable on chosen destination agents, by the best mechanism each has, and **additively — it never uninstalls**. `mirror` is the batch shortcut for every installed plugin:
+Plugins aren't config records like MCP servers — they're installed artifact bundles with per-agent identity and install mechanics. The flagship `sync` is plugin-first: it inventories the external plugins-cli catalogue and native runtime state, then reconciles each eligible artifact against every target before applying MCP union or loose-skill refresh.
 
-- **Codex** consumes plugins natively (`codex plugin add`). syncthis installs each missing plugin and, by default, registers any marketplace Codex lacks first.
-- **Cursor** has no list CLI, so it's a **write-only** target: pushed by source repo (`npx plugins add <repo> --target cursor`), additive, from a Claude primary only.
-- **The non-plugin agents** can't load plugins at all — so a Claude-primary mirror gives them the plugins' bundled **skills** via `npx skills add`, **and** the plugins' bundled **MCP servers**, decomposed and lifted into each agent's own MCP config (additive; `${CLAUDE_PLUGIN_ROOT}` resolved to the install dir; a name already present with a different config is left untouched). The plugin cohort already gets those servers by installing the plugin; Pi is skills-only, so it receives skills but no MCP lift.
+- **Claude Code** installs natively with `claude plugin install`; success requires a fresh authoritative state read showing the plugin active.
+- **Codex** installs natively with `codex plugin add`; its config and managed marketplace roots honor `$CODEX_HOME` when set.
+- **Kimi CLI** has no proven non-interactive native plugin ABI in the supported toolchain, so each artifact receives only its exact bundled skills and MCP degradation.
+- **GitHub Copilot CLI** registers marketplaces and installs repositories or exact local plugin paths with `copilot plugin`; activation and removal require a fresh `copilot plugin list`.
+- **Cursor** has no readable plugin state, so it is an explicitly **write-only** target pushed by source repo through `npx plugins add --target cursor`. The result is reported as unverified rather than pretending activation was observed.
+- **Agents without a native plugin ABI** receive the artifact's bundled skills and MCP servers only for that exact agent. A native target receives the same degradation only when the inspected artifact is positively unsupported; native read/install/verification failures do not fall back.
+
+The selective `plugins add` flow and the `plugins mirror` batch shortcut remain additive. They use a Claude source for its marketplace/source metadata and never uninstall implicitly.
 
 ```bash
-# See what's installed where (read-only): native plugins on Claude/Codex,
+# See what's installed where (read-only): native plugins on Claude/Codex/Copilot,
 # plus the plugin-derived skills surfaced on every non-plugin agent.
 syncthis plugin list
 
@@ -240,7 +247,7 @@ syncthis mirror claude-code --dry-run
 syncthis mirror claude-code --yes
 syncthis mirror claude-code --no-provision --yes   # skip Codex marketplace registration + Codex skills-fallback
 
-# Uninstall a plugin everywhere — native plugin (claude/codex) AND its surfaced skills
+# Uninstall a plugin everywhere — native plugin (Claude/Codex/Copilot) AND surfaced skills
 syncthis plugin rm forsvn-skills --all --dry-run   # preview the diff first
 syncthis plugin rm forsvn-skills --all --yes
 syncthis plugin rm forsvn-skills --agents codex,opencode,gemini-cli --yes
@@ -250,20 +257,20 @@ syncthis plugin rm forsvn-skills --agents codex,opencode,gemini-cli --yes
 
 ### Uninstalling — `plugin rm`
 
-`plugin rm <plugin…>` is the only plugin-removal path (sync and mirror never remove). For each named plugin it uninstalls the native plugin from the scoped plugin-capable agents (`claude plugin uninstall`, `codex plugin remove`) **and** removes that plugin's surfaced skills from the scoped non-plugin agents (`npx skills remove`) — including Codex when the mirror surfaced them there via the skills fallback. It's guarded like MCP `rm`: an explicit scope (`--all` or `--agents <a,b,c>`), a diff before any write, TTY-confirm or `--yes`, and `--dry-run`. Each argument is `name` (every installed instance) or `name@marketplace` (one instance). A skill another still-installed plugin record also provides is **kept** (no collateral removal); `--keep-data` preserves Claude's plugin data dir. Cursor is write-only and can't be uninstalled. The interactive picker offers the same flow with plugin and agent checkboxes.
+`plugin rm <plugin…>` is the only plugin-removal path (sync and mirror never remove). For each named plugin it uninstalls the native plugin from the scoped readable plugin targets — Claude Code, Codex, and GitHub Copilot CLI — **and** removes that plugin's surfaced skills from the scoped agents (`npx skills remove`), including Kimi and Codex when the mirror surfaced a positively skills-only bundle there. It's guarded like MCP `rm`: an explicit scope (`--all` or `--agents <a,b,c>`), a diff before any write, TTY-confirm or `--yes`, and `--dry-run`. Each argument is `name` (every installed instance) or `name@marketplace` (one instance). A skill another still-installed plugin record also provides is **kept** (no collateral removal); `--keep-data` preserves Claude's plugin data dir. Cursor is write-only and can't be uninstalled. The interactive picker offers the same flow with plugin and agent checkboxes.
 
 `mirror` reads the target's **real** install state (e.g. `codex plugin list`), not just what's registered in config — so it installs exactly what's missing and resolves each plugin to the target's own `<name>@<marketplace>` automatically.
 
 **Provisioning is on by default.** When Codex doesn't yet have a plugin's marketplace, syncthis registers its source repo (`npx plugins add <owner/repo> --target codex`, repo from the primary's marketplace list) and installs it — which also installs the repo's canonical plugin. Pass `--no-provision` to skip that registration and the Codex skills-fallback — Codex then installs only the plugins it can already resolve. (It's not a fully offline switch: the Cursor and non-plugin-agent skills pushes still run.)
 
-**Anything Codex can't load as a plugin becomes skills.** Two cases land here:
+**Fallback is evidence-gated, not a catch-all.** The flagship sync degrades an artifact only for a target with no native plugin ABI or a format that inspection positively proves that native target cannot load. A missing CLI, malformed state, failed native install, or failed post-install verification remains a failure and does not unlock loose skills or MCP fallback. The selective mirror has one narrower Codex path: a source that is positively identified as skills-only can be added to Codex through `npx skills`.
 
-- **Multi-plugin marketplaces.** Marketplaces like `browserbase`, `expo`, and `anthropics/skills` alias one bundle under several plugin names whose `plugin.json` name differs from the entry name. Claude installs every alias; Codex rejects the mismatch. syncthis installs the canonical plugin and marks each alias **covered** (its content is already there) — no error, no duplicate.
-- **Skills-only bundles.** Some "plugins" are really skill collections Codex's loader can't expose. After provisioning, syncthis adds the bundle's skills to Codex via `npx skills add <repo> -a codex` (a fallback row) — but only when no plugin from that repo already landed, so a plugin's namespaced skills are never duplicated as flat ones.
+- **Multi-plugin marketplaces.** Marketplaces like `browserbase`, `expo`, and `anthropics/skills` can alias one bundle under several plugin names. When the canonical native plugin is already active, aliases are marked **covered** and never duplicated as loose skills.
+- **Positively skills-only bundles.** After provisioning, mirror can add the bundle's skills to Codex via `npx skills add <repo> -a codex`, but only when source inspection finds skills and no recognized native manifest, and no plugin from that repo already landed.
 
-Skipped plugins (no resolvable marketplace under `--no-provision`, or ambiguous) are reported with a reason, not a failure — the run only exits non-zero on a genuine install error.
+Policy skips such as no resolvable marketplace under `--no-provision` are reported with a reason. Native state, install, and verification errors are failures.
 
-Installing plugins in the first place is left to the native tools (`claude plugin install`, `codex plugin add`, `npx plugins add`). Uninstalling is too (`claude plugin uninstall`, `codex plugin remove`) — syncthis never removes a plugin.
+You can still install or remove plugins directly with each native tool. syncthis also drives those native install paths during `sync`, `plugins add`, and `plugins mirror`, and drives native removal only through the explicit guarded `plugins rm` command.
 
 ## Desktop-owned servers
 
@@ -288,12 +295,13 @@ Run `syncthis doctor` first — it reports each agent's config status, per-serve
 | `refusing destructive write without --yes` (exit 2) | A destructive command (`<from> <to>`, `from --all`, `rm`, `mirror`) was run non-interactively (CI, pipe) with no TTY to confirm at. | Add `--yes` to confirm in non-interactive contexts, or run it in a terminal. |
 | `cannot read source <agent>: …` | The source agent's config is missing or malformed, so a directional sync would look like "delete everything." | syncthis bails before writing. Fix or create that agent's config, or sync from a different source. |
 | `target is a symlink, refusing to write through it` | The agent config (or its `.syncthis.bak`) is a symlink. | Intentional — syncthis won't clobber a symlink. Replace it with a regular file if you want syncthis to manage it. |
-| `mirror` reports plugins as `skipped` | The target can't resolve that plugin's marketplace — only happens with `--no-provision`, or on an ambiguous marketplace. Skips are expected, not failures. | Drop `--no-provision` (the default): mirror registers the marketplace, and adds bundles a target can't load as plugins as skills via `npx skills add`. |
+| `mirror` reports plugins as `skipped` | The target can't resolve that plugin's marketplace — normally under `--no-provision` or an ambiguous marketplace. Policy skips are not activation failures. | Drop `--no-provision` (the default) to let mirror register the marketplace. Skills fallback is used only for a positively identified skills-only source. |
 | `mirror` reports plugins as `covered` | The bundle is already on the target as a plugin under its canonical name (a multi-plugin marketplace alias, or a URL-named plugin). | Nothing to do — `covered` means the content is present; it isn't re-added as skills (no duplication). |
-| `… CLI not found on PATH` during `mirror`/`plugin list` | The agent's own CLI (`claude`, `codex`, `npx plugins`) isn't installed. | Install that agent's CLI; syncthis drives plugins through it, it doesn't bundle one. |
+| `native verification failed` or `fresh native read did not show…` | The installer exited, but authoritative runtime state did not prove activation. | Fix the native runtime/config and re-run. syncthis reports this as a failure and does not substitute loose fallback content. |
+| `… CLI not found on PATH` during plugin reconciliation | The required native CLI (`claude`, `codex`, `copilot`, or `npx plugins` for Cursor) isn't installed. | Install that agent's CLI; syncthis drives plugins through it, it doesn't bundle one. |
 | Skills step says it failed or timed out | `npx skills` hit the network and was slow/unavailable. | Non-fatal — MCP sync still completed. Re-run `syncthis skills` later, or `syncthis run --no-skills` to skip it. |
 
-syncthis honors `NO_COLOR` (disable ANSI), and `$COPILOT_HOME` / `$OPENCLAW_CONFIG_PATH` to relocate those two agents' configs (must resolve under `$HOME`).
+syncthis honors `NO_COLOR` (disable ANSI), `$CODEX_HOME` for Codex's config and managed marketplace root, and `$COPILOT_HOME` / `$OPENCLAW_CONFIG_PATH` for those agents' configs.
 
 ## License
 

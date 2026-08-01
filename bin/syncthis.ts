@@ -4,132 +4,33 @@ import { readFile, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { ADD_HELP, HELP, MCP_HELP, MCP_NO_ADD, PLUGINS_HELP, SKILLS_HELP } from "../src/cli/help.ts";
+import {
+  fanOutHasChanges,
+  printDirectionalDiff,
+  printFanOut,
+  printFanOutWrites,
+  printRemove,
+} from "../src/cli/render-mcp.ts";
+import {
+  printMirrorApplied,
+  printMirrorPreview,
+  printPluginAdd,
+  printPluginOverview,
+  printUninstallApplied,
+  printUninstallPreview,
+} from "../src/cli/render-plugins.ts";
+import { printDoctor, printPluginSkills, printSync } from "../src/cli/render-sync.ts";
+import { dim, exitIfFailed, green, red, row, yellow } from "../src/cli/output.ts";
+import {
+  dispatchRegisteredCommand,
+  type CommandRegistry,
+} from "../src/cli/registry.ts";
 import { deriveGlobalPrefix } from "../src/self-update.ts";
-import type { AgentId, RowStatus } from "../src/types.ts";
+import type { AgentId } from "../src/types.ts";
 
 const SELF_PACKAGE = "@hungv47/syncthis";
 const UPDATE_TIMEOUT_MS = 300_000;
-
-const HELP = `syncthis — keep your AI tools in sync
-
-  syncthis is a sync layer, not an installer. install MCP servers, plugins, and
-  skills with whatever tool you prefer (mcpm, claude mcp add, claude plugin
-  install, npx plugins add, npx skills add, …), then let syncthis share them
-  across every coding agent.
-
-  it manages three things — plus one flagship that does the everyday case in one shot:
-
-usage:
-  syncthis                          interactive picker (or this help if non-TTY)
-  syncthis sync  [--dry-run] [--no-skills]   flagship — MCP union + skills, everywhere
-                                             (alias: run)
-
-  syncthis plugins <list|mirror|add|rm>      manage plugins      (syncthis plugins help)
-  syncthis skills  <update|add|from-plugins|rm>
-                                             manage skills       (syncthis skills help)
-  syncthis mcp     <sync|doctor|from|rm>     manage MCP servers  (syncthis mcp help)
-  syncthis mcp <from> <to>                   one-way MCP mirror between two agents
-
-  syncthis add <repo|name…> [--as skill|plugin] --all | --agents <a,b,c>
-                                             add a skill repo or an installed plugin,
-                                             type auto-detected   (syncthis add help)
-
-  syncthis doctor                            MCP coverage + conflict report
-  syncthis update  [--dry-run]               update syncthis itself to the latest npm version
-  syncthis version                           print the installed syncthis version
-  syncthis help                              this message
-
-what sync does:
-  1. reads MCP servers from all 12 supported agents.
-     for Claude, merges top-level + every per-project mcpServers scope.
-  2. computes the union (servers in any agent → propagated to every agent).
-  3. for any name with conflicting configs across agents, leaves each agent's
-     own version untouched and reports the conflict — you resolve manually.
-  4. surfaces skills bundled inside your Claude plugins to the non-plugin agents
-     (\`npx skills add\`), since those agents can't read plugins, then runs
-     \`npx skills update -y\` to refresh everything (delegated to vercel-labs/skills).
-
-agents supported for MCP sync (use these IDs with the directional command):
-  claude-code, cursor, codex, gemini-cli, kimi-cli, antigravity,
-  github-copilot, windsurf, opencode, openclaw, hermes-agent, goose
-  plugin cohort (get the full bundle): claude-code, codex (native CLI), cursor
-  (write-only via npx plugins). the other non-plugin agents get the skill subset via npx skills.
-  skills also reach \`pi\` (no native MCP, so skills-only — not an MCP-sync target).
-
-flags:
-  --dry-run       report what would change without writing.
-  --no-skills     skip the skill update phase (sync/run only).
-  --all           required for fan-out, remove-all, and plugin-rm scope.
-  --agents <list> (plugin rm) comma-separated agents to uninstall from.
-  --keep-data     (plugin rm) keep claude's plugin data dir on uninstall.
-  --yes           skip confirmation prompt for destructive commands.
-  --no-provision  (mirror) don't register missing Codex marketplaces or fall
-                  unloadable bundles back to skills — Codex installs only what it
-                  can already resolve. (The Cursor + non-plugin-agent skills pushes
-                  still run.) By default mirror provisions (shells out, hits the
-                  network) so a plugin's content actually reaches Codex.
-
-removing a server: use \`syncthis mcp rm <server> --all --dry-run\`, review the diff,
-then rerun with \`--yes\`. plain union sync will re-propagate a server if it
-still exists in any agent.
-`;
-
-// Scoped help, one per noun. Printed by the group routers on \`<noun> help\` or an
-// unknown verb. The top-level HELP stays the map; these carry the per-noun detail.
-const PLUGINS_HELP = `syncthis plugins — manage plugins across agents (source: claude-code)
-
-  syncthis plugins list                      read-only overview across every agent
-  syncthis plugins mirror <primary> [--no-provision] [--yes] [--dry-run]
-                                             make every <primary> plugin reachable everywhere
-                                             (Codex native; Cursor via npx plugins; non-plugin
-                                             agents get the bundled skills + lifted MCP servers).
-                                             Additive — never uninstalls.
-  syncthis plugins add <name…> --all | --agents <a,b,c> [--dry-run]
-                                             push chosen plugins to chosen agents
-  syncthis plugins rm <name…> --all | --agents <a,b,c> [--yes] [--dry-run] [--keep-data]
-                                             guarded uninstall: native plugin (claude/codex) +
-                                             surfaced skills (rest). diff, confirm/--yes, --dry-run.`;
-
-const SKILLS_HELP = `syncthis skills — manage skills (delegated to vercel-labs/skills)
-
-  syncthis skills update                     npx skills update -y (refresh every installed skill)
-  syncthis skills add <repo…> --all | --agents <a,b,c> [--dry-run]
-                                             add skill repo(s) to chosen agents
-  syncthis skills from-plugins [--dry-run]   surface Claude-plugin-bundled skills to the
-                                             non-plugin agents (gemini-cli, kimi-cli, opencode, …, pi)
-  syncthis skills rm <name…> --all | --agents <a,b,c> [--yes] [--dry-run]
-                                             guarded skill removal`;
-
-const MCP_HELP = `syncthis mcp — manage MCP servers (syncthis mirrors servers; it never installs them)
-
-  syncthis mcp sync [--dry-run]              union sync across every MCP agent (skips skills)
-  syncthis mcp <from> <to> [--yes] [--dry-run]
-                                             one-way mirror from one agent to another
-  syncthis mcp from <agent> --all [--yes] [--dry-run]
-                                             fan one agent out to every other agent
-  syncthis mcp rm <server…> --all | --agents <a,b,c> [--yes] [--dry-run]
-                                             remove server(s) from the scoped agents
-  syncthis mcp doctor                        coverage + conflict report
-
-  (no \`mcp add\` — add a server with \`claude mcp add\`/mcpm, then \`syncthis sync\`.)`;
-
-const COLOR = process.stdout.isTTY && !process.env.NO_COLOR;
-const c = (code: string, s: string) => (COLOR ? `\x1b[${code}m${s}\x1b[0m` : s);
-const green = (s: string) => c("32", s);
-const red = (s: string) => c("31", s);
-const yellow = (s: string) => c("33", s);
-const dim = (s: string) => c("2", s);
-
-const GLYPHS: Record<RowStatus, string> = {
-  ok: green("✓"),
-  synced: green("✓"),
-  unchanged: green("="),
-  skipped: dim("·"),
-  drift: yellow("~"),
-  missing: yellow("?"),
-  invalid: red("✗"),
-  failed: red("✗"),
-};
 
 const OPTIONS = {
   "no-skills": { type: "boolean" },
@@ -156,14 +57,14 @@ async function cmdSync(argv: string[]) {
   const { runSync } = await import("../src/sync.ts");
   const { values } = parse(argv);
   const dryRun = !!values["dry-run"];
-  printSync(await runSync({ dryRun, skipSkills: !!values["no-skills"], onPluginSkillProgress: pluginSkillProgress }));
+  printSync(await runSync({ dryRun, skipSkills: !!values["no-skills"] }));
 }
 
 // MCP-only union sync — the body behind both bare `mcp` (legacy) and `mcp sync`.
 async function cmdMcp(argv: string[]) {
   const { runSync } = await import("../src/sync.ts");
   const { values } = parse(argv);
-  printSync(await runSync({ dryRun: !!values["dry-run"], skipSkills: true }));
+  printSync(await runSync({ dryRun: !!values["dry-run"], skipSkills: true, skipPlugins: true }));
 }
 
 // `syncthis mcp <verb>` group router. Bare `mcp` (and `mcp --dry-run`) keep the legacy
@@ -229,27 +130,6 @@ async function cmdSkillsFromPlugins(argv: string[]) {
   const report = await addSkillsFromPlugins({ dryRun, onProgress: pluginSkillProgress });
   printPluginSkills(report, dryRun);
   if (report.results.some((r) => r.status === "failed")) process.exit(1);
-}
-
-function printPluginSkills(r: import("../src/skills.ts").PluginSkillsReport, dryRun: boolean) {
-  if (!r.ran) {
-    row("skipped", "plugin-skills", "", r.message);
-    return;
-  }
-  let added = 0;
-  let skipped = 0;
-  let failed = 0;
-  for (const res of r.results) {
-    if (res.status === "added") added += 1;
-    else if (res.status === "skipped") skipped += 1;
-    else failed += 1;
-  }
-  const verb = dryRun ? "would add" : "added";
-  const detail = `${verb} ${added}${skipped ? `, ${skipped} skipped` : ""}${failed ? `, ${failed} failed` : ""}`;
-  row(failed ? "drift" : "synced", "plugin-skills", `${r.sources.length} repo(s) → ${r.agents.length} agent(s)`, detail);
-  for (const res of r.results) {
-    if (res.status === "failed") console.log(`      ${red("✗")} ${res.repo} ${dim(res.message ?? "")}`);
-  }
 }
 
 async function cmdUpdate(argv: string[]) {
@@ -438,194 +318,6 @@ async function cmdMirror(argv: string[]) {
   printMirrorApplied(applied, provision);
 }
 
-function printMirrorPreview(r: import("../src/plugins/mirror.ts").MirrorReport) {
-  console.log(`Mirror plugins from ${green(r.from)} → every other agent (additive):`);
-  for (const t of r.targets) {
-    // No diff → target config was unreadable. Show the reason only.
-    if (!t.diff) {
-      if (t.unsupportedReason) console.log(`  ${dim("·")} ${t.to.padEnd(14)} ${dim(t.unsupportedReason)}`);
-      continue;
-    }
-    const summary = t.diff.add.length ? `${green("+")}${t.diff.add.length}` : dim("unchanged");
-    console.log(`  ${green("→")} ${t.to.padEnd(14)} ${summary}`);
-    for (const p of t.diff.add) console.log(`      ${green("+")} ${p.marketplace ? `${p.name}@${p.marketplace}` : p.name}`);
-  }
-  printCursorPush(r.cursor);
-  printSkillCohortPreview(r.skillCohort);
-  printMcpCohortPreview(r.mcpCohort);
-}
-
-function printMcpCohortPreview(m: import("../src/plugins/mirror.ts").MirrorMcpCohort) {
-  const label = "mcp→agents";
-  if (!m.supported) {
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(m.reason ?? "unsupported")}`);
-    return;
-  }
-  if (m.servers.length === 0) {
-    const why = m.skipped.length
-      ? `no portable MCP servers (${m.skipped.length} skipped)`
-      : "no plugin-bundled MCP servers to surface";
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(why)}`);
-    return;
-  }
-  console.log(
-    `  ${green("→")} ${label.padEnd(14)} ${green("+")}${m.servers.length} ${dim(`server(s) → ${m.agents.length} non-plugin agents (lifted from plugins; additive, conflicts left untouched)`)}`,
-  );
-  for (const s of m.servers) console.log(`      ${green("+")} ${s.name} ${dim(`(from ${s.plugin})`)}`);
-  for (const sk of m.skipped) console.log(`      ${dim("·")} ${dim(`${sk.name} skipped — ${sk.reason}`)}`);
-}
-
-function printSkillCohortPreview(s: import("../src/plugins/mirror.ts").MirrorSkillCohort) {
-  const label = "skills→agents";
-  if (!s.supported) {
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(s.reason ?? "unsupported")}`);
-    return;
-  }
-  const n = s.report?.sources.length ?? 0;
-  if (n === 0) {
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim("no skill-bearing plugins to surface")}`);
-    return;
-  }
-  console.log(
-    `  ${green("→")} ${label.padEnd(14)} ${green("+")}${n} ${dim(`repo(s) → ${s.agents.length} non-plugin agents (npx skills; additive, already-synced skipped)`)}`,
-  );
-}
-
-function printCursorPush(c: import("../src/plugins/mirror.ts").CursorPush) {
-  if (!c.supported) {
-    console.log(`  ${dim("·")} ${"cursor".padEnd(14)} ${dim(c.reason ?? "unsupported")}`);
-    return;
-  }
-  if (c.repos.length === 0) {
-    console.log(`  ${dim("·")} ${"cursor".padEnd(14)} ${dim("no github-backed plugins to push")}`);
-    return;
-  }
-  // Cursor state isn't readable, so this is an additive push of every repo.
-  console.log(`  ${green("→")} ${"cursor".padEnd(14)} ${green("+")}${c.repos.length} ${dim("(via npx plugins; additive — cursor state not readable)")}`);
-  for (const repo of c.repos) console.log(`      ${green("+")} ${repo}`);
-}
-
-function printMirrorApplied(r: import("../src/plugins/mirror.ts").MirrorReport, provision: boolean) {
-  let installed = 0;
-  let covered = 0;
-  let skipped = 0;
-  let failed = 0;
-  // True only when a plugin install was skipped for lack of a resolvable
-  // marketplace (the one cause the --no-provision tip actually addresses) — not
-  // for a no-skills fallback or an unsupported cohort, which provisioning won't fix.
-  let sawUnresolvedSkip = false;
-  for (const t of r.targets) {
-    for (const ins of t.installs ?? []) {
-      if (ins.status === "failed") {
-        failed += 1;
-        row("failed", t.to, ins.target, ins.message);
-      } else if (ins.status === "skipped") {
-        // A bundle that fell back to `npx skills add` is reported by the
-        // skills-fallback row below — don't also print it as a bare skip.
-        if (ins.skillsFallbackRepo) continue;
-        if (ins.coveredBy) {
-          // Content is on the target as a plugin already (canonical name / sibling
-          // alias). Not a miss — surface it, but it didn't need its own install.
-          covered += 1;
-          row("synced", t.to, ins.target, ins.message ?? `covered by ${ins.coveredBy}`);
-        } else {
-          // Genuinely not mirror-able to this target (e.g. --no-provision and no
-          // resolvable marketplace, or ambiguous) — not an error.
-          skipped += 1;
-          sawUnresolvedSkip = true;
-          row("skipped", t.to, ins.target, ins.message);
-        }
-      } else if (ins.status === "installed") {
-        installed += 1;
-        row("synced", t.to, ins.target, "installed");
-      }
-    }
-    for (const sf of t.skillsFallback ?? []) {
-      if (sf.status === "failed") {
-        failed += 1;
-        row("failed", t.to, sf.repo, `skills fallback: ${sf.message ?? "failed"}`);
-      } else if (sf.status === "added") {
-        installed += 1;
-        row("synced", t.to, sf.repo, "added as skills (npx skills — not loadable as a plugin here)");
-      } else {
-        // "skipped" — the bundle had no skills after all. Nothing to add; say why.
-        skipped += 1;
-        row("skipped", t.to, sf.repo, sf.message ?? "no skills in bundle");
-      }
-    }
-  }
-  if (r.cursor.supported) {
-    for (const res of r.cursor.results) {
-      if (res.status === "failed") {
-        failed += 1;
-        row("failed", "cursor", res.repo, res.message);
-      } else {
-        installed += 1;
-        row("synced", "cursor", res.repo, "installed (npx plugins)");
-      }
-    }
-  } else if (r.cursor.reason) {
-    skipped += 1;
-    row("skipped", "cursor", "", r.cursor.reason);
-  }
-  // Skill-cohort push (the non-plugin agents).
-  if (!r.skillCohort.supported) {
-    if (r.skillCohort.reason) {
-      skipped += 1;
-      row("skipped", "skills→agents", "", r.skillCohort.reason);
-    }
-  } else {
-    for (const res of r.skillCohort.report?.results ?? []) {
-      if (res.status === "failed") {
-        failed += 1;
-        row("failed", "skills→agents", res.repo, res.message);
-      } else if (res.status === "added") {
-        installed += 1;
-        row("synced", "skills→agents", res.repo, `added to ${r.skillCohort.agents.length} non-plugin agents`);
-      }
-      // "skipped" (already synced / no skills) is the common, quiet case — omit.
-    }
-  }
-  // Plugin-bundled MCP servers lifted into the non-plugin agents.
-  if (!r.mcpCohort.supported) {
-    if (r.mcpCohort.reason) {
-      skipped += 1;
-      row("skipped", "mcp→agents", "", r.mcpCohort.reason);
-    }
-  } else {
-    for (const res of r.mcpCohort.results ?? []) {
-      if (res.status === "failed") {
-        failed += 1;
-        row("failed", res.agent, "", `mcp: ${res.message ?? "failed"}`);
-      } else if (res.added.length) {
-        installed += res.added.length;
-        row("synced", res.agent, "", `+${res.added.length} mcp: ${res.added.join(", ")}`);
-      }
-      // A name already present with a different config is left untouched — surface
-      // it so the user can resolve it (same policy as union sync), but it's not a
-      // failure and doesn't block.
-      if (res.conflicts.length) {
-        row("drift", res.agent, "", `${res.conflicts.length} conflict(s) left untouched: ${res.conflicts.join(", ")}`);
-      }
-    }
-  }
-  const parts = [
-    installed ? green(`${installed} added`) : "",
-    covered ? dim(`${covered} already covered`) : "",
-    skipped ? dim(`${skipped} skipped`) : "",
-    failed ? red(`${failed} failed`) : "",
-  ].filter(Boolean);
-  if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
-  // Only meaningful when the user disabled provisioning: that's the one cause
-  // "re-run without --no-provision" actually fixes. With provisioning on, a skip is
-  // ambiguity or a non-github marketplace — re-running changes nothing.
-  if (!provision && sawUnresolvedSkip) {
-    console.log(dim("tip: skipped plugins had no marketplace Codex could resolve — re-run without --no-provision to register their marketplaces and add unloadable bundles as skills."));
-  }
-  // Only genuine CLI errors count as failures; skips/covered are expected.
-  if (failed > 0) process.exit(1);
-}
-
 async function cmdPlugin(argv: string[]) {
   const sub = argv[0];
   if (!sub || sub === "list") return cmdPluginList();
@@ -652,7 +344,7 @@ async function cmdPluginList() {
 
 async function cmdPluginRemove(argv: string[]) {
   const { runPluginUninstall, uninstallHasChanges } = await import("../src/plugins/uninstall.ts");
-  const { listAgentIds } = await import("../src/sync.ts");
+  const { listAgentIds } = await import("../src/adapters/index.ts");
   const { values, positionals } = parse(argv);
   const plugins = positionals;
   if (plugins.length === 0) {
@@ -728,7 +420,8 @@ async function cmdPluginRemove(argv: string[]) {
 }
 
 async function cmdFanOut(argv: string[]) {
-  const { runFanOut, listAgentIds } = await import("../src/sync.ts");
+  const { listAgentIds } = await import("../src/adapters/index.ts");
+  const { runFanOut } = await import("../src/sync.ts");
   const { values, positionals } = parse(argv);
   const from = positionals[0];
   const ids = listAgentIds();
@@ -784,8 +477,6 @@ function resolveAgentScope(values: ParsedValues, known: AgentId[], label: string
   process.exit(2);
 }
 
-const MCP_NO_ADD = "syncthis mirrors MCP servers, it doesn't install them. Add a server with `claude mcp add`/mcpm, then `syncthis sync`.";
-
 // `syncthis add <items…> --agents <list>|--all` — additive (no confirm; supports
 // --dry-run). The type is named explicitly (`add skill|plugin <items…>`) or auto-detected
 // from the source. MCP has no add (syncthis is a sync layer, not an installer).
@@ -806,19 +497,6 @@ async function cmdAdd(argv: string[]) {
   // each one's type. `--as skill|plugin|mcp` forces the type.
   return cmdAddAuto(argv);
 }
-
-const ADD_HELP = `syncthis add — add a skill or plugin to chosen agents (type auto-detected)
-
-  syncthis add <owner/repo…> --all | --agents <a,b,c> [--dry-run]
-                                             a repo slug → treated as a SKILL repo
-  syncthis add <plugin-name…> --all | --agents <a,b,c> [--dry-run]
-                                             a bare name claude-code has installed →
-                                             treated as a PLUGIN and propagated
-  syncthis add <items…> --as skill|plugin    force the type, skip detection
-  syncthis add skill|plugin <items…>         name the type explicitly (same handlers)
-
-  detection: \`owner/repo\` → skill; a bare name claude-code has installed → plugin; any
-  other bare name looks like an MCP server name — ${MCP_NO_ADD} (there is no \`add mcp\`).`;
 
 // Auto-detect path: classify each source (skill / plugin / mcp) and route to the typed
 // handler. Reuses the explicit handlers wholesale (scope parsing, dry-run, printing).
@@ -866,7 +544,7 @@ async function cmdAddAuto(argv: string[]) {
 async function cmdAddSkill(argv: string[]) {
   const { addSkillRepos } = await import("../src/skills.ts");
   const { isSafeRepoSlug } = await import("../src/plugins/shell.ts");
-  const { listAgentIds } = await import("../src/sync.ts");
+  const { listAgentIds } = await import("../src/adapters/index.ts");
   const { values, positionals } = parse(argv);
   if (positionals.length === 0) {
     console.error(red("add skill: name at least one repo (e.g. vercel-labs/agent-skills)"));
@@ -894,7 +572,7 @@ async function cmdAddSkill(argv: string[]) {
 
 async function cmdAddPlugin(argv: string[]) {
   const { runPluginAdd, pluginAddHasWork } = await import("../src/plugins/add.ts");
-  const { listAgentIds } = await import("../src/sync.ts");
+  const { listAgentIds } = await import("../src/adapters/index.ts");
   const { values, positionals } = parse(argv);
   if (positionals.length === 0) {
     console.error(red("add plugin: name at least one plugin (must be installed on claude-code, the source)"));
@@ -941,7 +619,8 @@ async function cmdRm(argv: string[]) {
 }
 
 async function cmdRmMcp(argv: string[]) {
-  const { runRemove, listAgentIds } = await import("../src/sync.ts");
+  const { listAgentIds } = await import("../src/adapters/index.ts");
+  const { runRemove } = await import("../src/sync.ts");
   const { values, positionals } = parse(argv);
   if (positionals.length === 0) {
     console.error(red("rm mcp: name at least one server"));
@@ -973,7 +652,7 @@ async function cmdRmMcp(argv: string[]) {
 
 async function cmdRmSkill(argv: string[]) {
   const { removeSkillNames, listInstalledSkills } = await import("../src/skills.ts");
-  const { listAgentIds } = await import("../src/sync.ts");
+  const { listAgentIds } = await import("../src/adapters/index.ts");
   const { values, positionals } = parse(argv);
   if (positionals.length === 0) {
     console.error(red("rm skill: name at least one skill"));
@@ -1013,7 +692,8 @@ async function cmdRmSkill(argv: string[]) {
 }
 
 async function cmdDirectional(from: string, to: string, argv: string[]) {
-  const { runDirectional, listAgentIds } = await import("../src/sync.ts");
+  const { listAgentIds } = await import("../src/adapters/index.ts");
+  const { runDirectional } = await import("../src/sync.ts");
   const { values } = parse(argv);
   const ids = listAgentIds();
   if (!ids.includes(from as AgentId)) {
@@ -1073,79 +753,6 @@ async function cmdDirectional(from: string, to: string, argv: string[]) {
   }
 }
 
-function printDirectionalDiff(r: import("../src/sync.ts").DirectionalReport) {
-  console.log(`Mirror MCP servers from ${green(r.from)} → ${green(r.to)}:`);
-  if (r.diff.add.length) console.log(`  ${green("+")} add ${r.diff.add.length}:        ${r.diff.add.join(", ")}`);
-  if (r.diff.overwrite.length) console.log(`  ${yellow("~")} overwrite ${r.diff.overwrite.length}:  ${r.diff.overwrite.join(", ")}`);
-  if (r.diff.remove.length) console.log(`  ${red("-")} remove ${r.diff.remove.length}:     ${r.diff.remove.join(", ")}`);
-}
-
-function printFanOut(r: import("../src/sync.ts").FanOutReport) {
-  console.log(`Mirror MCP servers from ${green(r.from)} → ${green("all other agents")}:`);
-  for (const target of r.targets) {
-    if (target.toRead.error) {
-      console.log(`  ${red("✗")} ${target.to.padEnd(14)} ${dim(target.toRead.error)}`);
-      continue;
-    }
-    const parts = [
-      target.diff.add.length ? `${green("+")}${target.diff.add.length}` : "",
-      target.diff.overwrite.length ? `${yellow("~")}${target.diff.overwrite.length}` : "",
-      target.diff.remove.length ? `${red("-")}${target.diff.remove.length}` : "",
-    ].filter(Boolean);
-    console.log(`  ${parts.length ? yellow("~") : green("=")} ${target.to.padEnd(14)} ${parts.join(" ") || dim("unchanged")}`);
-  }
-}
-
-function printFanOutWrites(r: import("../src/sync.ts").FanOutReport) {
-  for (const target of r.targets) {
-    if (target.write) row(target.write.status, target.to, target.write.path, target.write.message);
-  }
-}
-
-function fanOutHasChanges(r: import("../src/sync.ts").FanOutReport): boolean {
-  return r.targets.some((target) =>
-    target.toRead.error ||
-    target.diff.add.length > 0 ||
-    target.diff.overwrite.length > 0 ||
-    target.diff.remove.length > 0,
-  );
-}
-
-function printRemove(r: import("../src/sync.ts").RemoveReport) {
-  console.log(`Remove MCP server ${green(r.name)} from ${r.writes.length} agent(s):`);
-  for (const write of r.writes) row(write.status, write.agent, write.path, write.message);
-}
-
-function printPluginAdd(r: import("../src/plugins/add.ts").PluginAddReport, preview: boolean): number {
-  const targets = r.requestedAgents.filter((a) => a !== "claude-code");
-  console.log(`${preview ? "Add" : "Added"} ${r.plugins.map((p) => green(p)).join(", ")} → ${targets.join(", ") || dim("(no targets)")} ${dim("(source: claude-code)")}`);
-  for (const n of r.notFound) row("missing", "claude-code", n, "not installed on the source");
-  let failed = 0;
-  for (const ins of r.installs) {
-    if (ins.status === "failed") { failed += 1; row("failed", ins.agent, ins.target, ins.message); }
-    else if (ins.status === "present") row("synced", ins.agent, ins.target, "already present");
-    else if (ins.status === "installed") row("synced", ins.agent, ins.target, preview ? "would install" : "installed");
-    else if (ins.status === "skipped" && !ins.skillsFallbackRepo) row("skipped", ins.agent, ins.target, ins.message); // fallback shown under skills
-  }
-  if (r.cursor) {
-    for (const res of r.cursor.results) {
-      if (res.status === "failed") { failed += 1; row("failed", "cursor", res.repo, res.message); }
-      else row("synced", "cursor", res.repo, "installed (npx plugins)");
-    }
-    if (preview) for (const repo of r.cursor.repos) row("synced", "cursor", repo, "would push");
-  }
-  for (const s of r.skills) {
-    if (s.status === "failed") { failed += 1; row("failed", "skills", s.repo, s.message); }
-    else row("synced", "skills", s.repo, preview ? "would add" : s.status === "skipped" ? (s.message ?? "no skills") : "added");
-  }
-  for (const m of r.mcp) {
-    if (m.status === "failed") { failed += 1; row("failed", m.agent, "", `mcp: ${m.message ?? "failed"}`); }
-    else if (m.added.length) row("synced", m.agent, "", `${preview ? "would add " : "+"}${m.added.length} mcp: ${m.added.join(", ")}`);
-    if (m.conflicts.length) row("drift", m.agent, "", `${m.conflicts.length} mcp conflict(s) left untouched: ${m.conflicts.join(", ")}`);
-  }
-  return failed;
-}
-
 async function confirmDestructive(yes: boolean) {
   if (yes) return;
   if (process.stdin.isTTY) {
@@ -1186,213 +793,27 @@ function readLine(): Promise<string> {
   });
 }
 
-function row(status: RowStatus, label: string, path: string, message?: string) {
-  const detail = path ? dim(path) + (message ? dim(` (${message})`) : "") : message ? dim(message) : "";
-  console.log(`  ${GLYPHS[status]} ${label.padEnd(14)} ${detail}`);
-}
-
-function printCompatibilityIssues(issues: import("../src/types.ts").AdapterCompatibilityIssue[]) {
-  if (issues.length === 0) return;
-  console.log(yellow(`\ncompatibility adjustments:`));
-  for (const issue of issues) {
-    console.log(`  ${yellow("~")} ${issue.agent.padEnd(14)} ${issue.server} ${dim(`${issue.action}: ${issue.reason}`)}`);
-  }
-}
-
-function printSync(r: import("../src/sync.ts").SyncReport) {
-  const totalNames = new Set<string>();
-  for (const read of r.reads) for (const n of Object.keys(read.servers)) totalNames.add(n);
-  const safeCount = Object.keys(r.union).length;
-  console.log(
-    dim(
-      `read ${totalNames.size} server name(s) across ${r.reads.length} agent(s); ${safeCount} synced, ${r.conflicts.length} conflict(s)`,
-    ),
-  );
-
-  for (const w of r.writes) row(w.status, w.agent, w.path, w.message);
-  printCompatibilityIssues(r.writes.flatMap((w) => w.compatibility ?? []));
-
-  if (r.conflicts.length) {
-    console.log(yellow(`\n${r.conflicts.length} conflict(s) — left each agent's own copy untouched:`));
-    for (const c of r.conflicts) {
-      console.log(`  ${yellow("~")} ${c.name}`);
-      for (const v of c.versions) console.log(`      ${dim(`in ${v.agent}`)}`);
-    }
-    console.log(dim(`  resolve by deleting the version you don't want, then re-run sync.`));
-  }
-
-  if (r.pluginSkills) printPluginSkills(r.pluginSkills, r.pluginSkills.dryRun);
-
-  if (r.skills) {
-    if (!r.skills.ran) row("skipped", "skills", "", r.skills.message);
-    else if (r.skills.ok) row("synced", "skills", "", "npx skills update -y");
-    else row("drift", "skills", "", r.skills.message ?? "failed");
-  }
-
-  exitIfFailed(r.writes);
-}
-
-function printDoctor(r: import("../src/doctor.ts").DoctorReport) {
-  for (const read of r.reads) {
-    if (read.error) row("invalid", read.agent, read.path, read.error);
-    else if (!read.exists) row("missing", read.agent, read.path, "file does not exist");
-    else row("ok", read.agent, read.path, `${Object.keys(read.servers).length} server(s)`);
-  }
-
-  if (r.coverage.length === 0) {
-    console.log(dim("\nno servers configured in any agent."));
-  } else {
-    console.log(dim(`\ncoverage:`));
-    for (const c of r.coverage) {
-      const tag = c.missing.length === 0 ? green("[full]") : yellow(`[${c.present.length}/${r.reads.length}]`);
-      const detail = c.missing.length === 0 ? "" : dim(` — missing in ${c.missing.join(", ")}`);
-      console.log(`  ${tag} ${c.name}${detail}`);
-    }
-  }
-
-  printCompatibilityIssues(r.reads.flatMap((read) => read.compatibility ?? []));
-
-  if (r.conflicts.length) {
-    console.log(yellow(`\n${r.conflicts.length} conflict(s):`));
-    for (const c of r.conflicts) {
-      console.log(`  ${yellow("~")} ${c.name} — different config in ${c.versions.map((v) => v.agent).join(", ")}`);
-    }
-    process.exit(1);
-  }
-
-  if (r.unmanaged.length) {
-    console.log(yellow(`\nunmanaged MCP config(s) with servers:`));
-    for (const u of r.unmanaged) {
-      console.log(`  ${yellow("~")} ${u.label.padEnd(18)} ${dim(u.path)} ${dim(`(${u.serverNames.join(", ")})`)}`);
-    }
-    console.log(dim("  these files are not written by syncthis; clear or manage them separately."));
-  }
-}
-
-function printPluginOverview(o: import("../src/plugins/overview.ts").PluginOverview) {
-  console.log("Plugins across your agents:\n");
-  // Native plugins on the plugin-capable agents (claude-code, codex).
-  for (const r of o.native) {
-    if (r.error) {
-      row("invalid", r.agent, r.configPath, r.error);
-      continue;
-    }
-    if (!r.exists) {
-      row("missing", r.agent, r.configPath, "no config");
-      continue;
-    }
-    row("ok", r.agent, r.configPath, `${r.plugins.length} plugin(s)`);
-    for (const p of r.plugins) {
-      const mkt = p.marketplace ? dim(`@${p.marketplace}`) : "";
-      const ver = p.version ? dim(` v${p.version}`) : "";
-      const enabled = p.enabled === false ? yellow(" (disabled)") : "";
-      console.log(`      ${dim("·")} ${p.name}${mkt}${ver}${enabled}`);
-    }
-  }
-  // Cursor is a plugin target but write-only — no list CLI to read.
-  row("missing", "cursor", "~/.cursor", "write-only plugin target — Cursor's plugin state isn't readable");
-
-  // The non-plugin agents: plugins reach them only as surfaced skills.
-  console.log(dim("\nplugin-derived skills (on agents that can't load plugins natively):"));
-  if (!o.skillsReadable) {
-    console.log(dim("  couldn't read `npx skills list` — derived-skill view unavailable"));
-    return;
-  }
-  if (o.derivedRepos.length === 0) {
-    console.log(dim("  none surfaced yet — use `syncthis` → Manage plugins → Sync plugins, or `syncthis mirror claude-code` for batch all"));
-    return;
-  }
-  console.log(dim(`  source repos: ${o.derivedRepos.join(", ")}`));
-  const union = new Set<string>();
-  for (const d of o.derived) for (const s of d.skills) union.add(s.name);
-  if (union.size) console.log(dim(`  skills: ${[...union].sort().join(", ")}`));
-  for (const d of o.derived) {
-    const glyph = d.skills.length ? green("✓") : dim("·");
-    console.log(`  ${glyph} ${d.agent.padEnd(14)} ${d.skills.length} skill(s)`);
-  }
-}
-
-function printUninstallPreview(r: import("../src/plugins/uninstall.ts").UninstallReport) {
-  console.log(`Uninstall ${r.plugins.map((p) => green(p)).join(", ")}:`);
-  for (const t of r.native) {
-    const target = t.marketplace ? `${t.plugin}@${t.marketplace}` : t.plugin;
-    if (t.unreadable) row("invalid", t.agent, "", `can't read plugins: ${t.unreadable}`);
-    else if (t.present) console.log(`  ${red("-")} ${t.agent.padEnd(14)} ${target} ${dim("(native plugin)")}`);
-    else console.log(`  ${dim("·")} ${t.agent.padEnd(14)} ${dim(`${target} not installed`)}`);
-  }
-  if (r.skills.names.length && r.skills.agents.length) {
-    console.log(
-      `  ${red("-")} ${"skills".padEnd(14)} ${red(`${r.skills.names.length}`)} skill(s) from ${r.skills.agents.length} non-plugin agent(s)`,
-    );
-    console.log(`      ${dim(`names:  ${r.skills.names.join(", ")}`)}`);
-    console.log(`      ${dim(`agents: ${r.skills.agents.join(", ")}`)}`);
-  } else if (r.skills.names.length) {
-    console.log(`  ${dim("·")} ${"skills".padEnd(14)} ${dim("derived skills exist, but none of the scoped agents hold them")}`);
-  }
-  if (r.skills.kept.length) {
-    console.log(dim(`  kept (still provided by another installed plugin): ${r.skills.kept.join(", ")}`));
-  }
-  for (const a of r.unsupportedAgents) {
-    console.log(`  ${dim("·")} ${a.padEnd(14)} ${dim("can't uninstall here (write-only plugin target, no list/uninstall CLI)")}`);
-  }
-  if (r.claudeReadError && r.skillScope.length) {
-    console.log(
-      yellow(
-        `  ! couldn't read Claude's plugins (${r.claudeReadError}) — can't resolve which surfaced skills to remove from ${r.skillScope.join(", ")}; those skills will be left in place`,
-      ),
-    );
-  }
-}
-
-function printUninstallApplied(r: import("../src/plugins/uninstall.ts").UninstallReport): number {
-  let removed = 0;
-  let absent = 0;
-  let skipped = 0;
-  let failed = 0;
-  for (const res of r.nativeResults ?? []) {
-    if (res.status === "uninstalled") {
-      removed += 1;
-      row("synced", res.agent, res.target, "uninstalled");
-    } else if (res.status === "absent") {
-      absent += 1; // quiet — nothing was there
-    } else if (res.status === "skipped") {
-      skipped += 1;
-      row("skipped", res.agent, res.target, res.message);
-    } else {
-      failed += 1;
-      row("failed", res.agent, res.target, res.message);
-    }
-  }
-  if (r.skillResult) {
-    const sr = r.skillResult;
-    if (sr.status === "removed") {
-      removed += sr.skills.length;
-      row("synced", "skills", "", `removed ${sr.skills.length} skill(s) from ${sr.agents.length} agent(s)`);
-    } else if (sr.status === "skipped") {
-      skipped += 1;
-      row("skipped", "skills", "", sr.message);
-    } else {
-      failed += 1;
-      row("failed", "skills", "", sr.message);
-    }
-  }
-  const parts = [
-    removed ? green(`${removed} removed`) : "",
-    absent ? dim(`${absent} absent`) : "",
-    skipped ? dim(`${skipped} skipped`) : "",
-    failed ? red(`${failed} failed`) : "",
-  ].filter(Boolean);
-  if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
-  return failed;
-}
-
-function exitIfFailed(writes: { status: RowStatus }[]) {
-  const failed = writes.filter((w) => w.status === "failed");
-  if (failed.length) {
-    console.log(red(`\n${failed.length} adapter(s) failed.`));
-    process.exit(1);
-  }
-}
+const COMMANDS = {
+  help: () => console.log(HELP),
+  "-h": () => console.log(HELP),
+  "--help": () => console.log(HELP),
+  version: () => cmdVersion(),
+  "--version": () => cmdVersion(),
+  "-v": () => cmdVersion(),
+  sync: cmdSync,
+  run: cmdSync,
+  plugins: cmdPlugins,
+  skills: cmdSkills,
+  mcp: cmdMcpGroup,
+  doctor: () => cmdDoctor(),
+  update: cmdUpdate,
+  mirror: cmdMirror,
+  from: cmdFanOut,
+  add: cmdAdd,
+  rm: cmdRm,
+  remove: cmdRm,
+  plugin: cmdPlugin,
+} satisfies CommandRegistry;
 
 async function main() {
   const [, , cmd, ...rest] = process.argv;
@@ -1408,23 +829,7 @@ async function main() {
     return console.log(HELP);
   }
 
-  if (cmd === "help" || cmd === "-h" || cmd === "--help") return console.log(HELP);
-  if (cmd === "version" || cmd === "--version" || cmd === "-v") return cmdVersion();
-  // Canonical noun-first grammar.
-  if (cmd === "sync") return cmdSync(rest);
-  if (cmd === "run") return cmdSync(rest);
-  if (cmd === "plugins") return cmdPlugins(rest);
-  if (cmd === "skills") return cmdSkills(rest);
-  if (cmd === "mcp") return cmdMcpGroup(rest);
-  if (cmd === "doctor") return cmdDoctor();
-  if (cmd === "update") return cmdUpdate(rest);
-
-  // Legacy aliases — still work, not advertised in help (see CLAUDE.md).
-  if (cmd === "mirror") return cmdMirror(rest);
-  if (cmd === "from") return cmdFanOut(rest);
-  if (cmd === "add") return cmdAdd(rest);
-  if (cmd === "rm" || cmd === "remove") return cmdRm(rest);
-  if (cmd === "plugin") return cmdPlugin(rest);
+  if (await dispatchRegisteredCommand(cmd, rest, COMMANDS)) return;
 
   // Directional: two positional agent IDs.
   if (rest.length >= 1 && !cmd.startsWith("-")) {

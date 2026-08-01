@@ -1,6 +1,6 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "Install a Claude plugin once and reach it on every agent — syncthis decomposes plugins into skills + MCP servers for the other 11. Plus cross-agent MCP union sync across 12 AI coding agents (Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Windsurf, Antigravity, Copilot, OpenClaw, Hermes, Goose). Skills also reach Pi. Runs on Node — `npx @hungv47/syncthis run`.",
   "type": "module",
   "license": "MIT",
@@ -50,10 +50,10 @@
     "bun": ">=1.0.0"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --timeout 15000 --max-concurrency 4",
     "typecheck": "bunx tsc --noEmit",
     "build": "bun scripts/build.ts",
-    "prepublishOnly": "bun test && bunx tsc --noEmit && bun scripts/build.ts"
+    "prepublishOnly": "bun run test && bun run typecheck && bun run build"
   },
   "publishConfig": {
     "access": "public",

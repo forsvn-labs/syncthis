@@ -7,7 +7,7 @@
 // primary constraint. For each chosen plugin, by target:
 //   • Codex (plugin cohort): native `installPlugin` (provision on) — reuses all of the
 //     adapter's resolve/provision/covered/skills-fallback logic.
-//   • Cursor (write-only): `npx plugins add <repo> --target cursor`.
+//   • Cursor (write-only): `npx plugins add <repo-or-local-artifact> --target cursor`.
 //   • Non-plugin agents: the plugin's bundled skills (`npx skills add`) AND its bundled
 //     MCP servers, lifted into each agent's own config (additive, conflict-safe).
 // Additive only — never removes. A plugin not installed on Claude is reported, not
@@ -15,12 +15,18 @@
 
 import { claudeMarketplaceClonePaths, claudePluginAdapter } from "./claude.ts";
 import { pluginAdapters } from "./index.ts";
+import {
+  artifactFromPluginRecord,
+  planArtifactLifecycle,
+  type ArtifactPlan,
+} from "./lifecycle.ts";
 import { resolvePluginMcpServers } from "./mcp.ts";
 import type { McpCohortResult } from "./mirror.ts";
-import { isSafeRepoSlug, run } from "./shell.ts";
+import { run } from "./shell.ts";
 import type { PluginInstallResult, PluginRecord } from "./types.ts";
-import { addSkillRepos, mcpCohort, skillCohort, type SkillAddResult } from "../skills.ts";
-import { diffServers, findAdapter } from "../sync.ts";
+import { findAdapter } from "../adapters/index.ts";
+import { diffServers } from "../mcp-state.ts";
+import { addSkillSources, mcpCohort, skillCohort, type SkillAddResult } from "../skills.ts";
 import type { AgentId, McpServer } from "../types.ts";
 
 const CURSOR_PLUGINS_TIMEOUT_MS = 180_000;
@@ -86,52 +92,106 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   if (chosen.length === 0) return base;
 
   const sources = (await claudePluginAdapter.marketplaceSources?.()) ?? null;
-  const repoOf = (p: PluginRecord): string | undefined =>
-    p.marketplace ? sources?.get(p.marketplace) : undefined;
   // Local clone dir per marketplace — the network-free install path. Source is always
   // Claude here, so the clone map is Claude's known_marketplaces installLocation set.
   const clonePaths = await claudeMarketplaceClonePaths();
-  const cloneOf = (p: PluginRecord): string | undefined =>
-    p.marketplace ? clonePaths.get(p.marketplace) : undefined;
-  const chosenRepos = [
-    ...new Set(chosen.map(repoOf).filter((r): r is string => !!r && isSafeRepoSlug(r))),
-  ].sort();
+  const planned = await Promise.all(chosen.map(async (plugin) => {
+    const artifact = await artifactFromPluginRecord(plugin, {
+      agent: "claude-code",
+      sourceRepo: plugin.marketplace ? sources?.get(plugin.marketplace) : plugin.sourceRepo,
+      marketplaceRoot: plugin.marketplace ? clonePaths.get(plugin.marketplace) : undefined,
+    });
+    const plan = await planArtifactLifecycle({
+      artifact,
+      agent: "claude-code",
+      mode: "verified",
+      sourceRequired: true,
+      provision,
+      dryRun: !opts.apply,
+    });
+    return { plugin, plan };
+  }));
+  const sourcePlans = planned.map(({ plan }) => plan);
+  const planByRecord = new Map(planned.map(({ plugin, plan }) => [plugin, plan]));
+  const planOf = (plugin: PluginRecord): ArtifactPlan => planByRecord.get(plugin)!;
+  const cursorSources = [...new Set(
+    sourcePlans
+      .map((plan) => plan.source.writeOnly?.value)
+      .filter((source): source is string => !!source),
+  )].sort();
 
   const scopedSkillCohort = requested.filter((a) => skillCohort().includes(a));
   const scopedMcpCohort = requested.filter((a) => mcpCohort().includes(a));
   const wantCursor = requested.includes("cursor");
-  const wantCodex = requested.includes("codex");
+  const nativeTargets = pluginAdapters.filter((a) => a.id !== "claude-code" && requested.includes(a.id));
+  // Per target, plugins that landed natively in this run/preview. Loose skills and
+  // decomposed MCP are filtered at plugin/repo granularity so one successful native
+  // plugin never gets duplicated merely because a sibling plugin failed.
+  const nativeCoverage = new Map<AgentId, Set<string>>();
+  const recordNativeOutcome = (agent: AgentId, plan: ArtifactPlan, result: PluginInstallResult) => {
+    // A real native attempt owns this plugin's runtime state even when it fails:
+    // keep that failure explicit instead of silently installing a different loose
+    // capability and making the overall result look successful. A preflight skip
+    // (usually no usable source) did not attempt native installation, so it remains
+    // eligible for the loose last-resort path.
+    if (result.status === "skipped" && !result.coveredBy) return;
+    let covered = nativeCoverage.get(agent);
+    if (!covered) nativeCoverage.set(agent, covered = new Set());
+    covered.add(plan.ownershipKey);
+  };
+  const loosePluginsFor = (agent: AgentId): PluginRecord[] => {
+    const covered = nativeCoverage.get(agent);
+    return covered
+      ? chosen.filter((plugin) => !covered.has(planOf(plugin).ownershipKey))
+      : chosen;
+  };
+  const looseSourcesFor = (agent: AgentId): string[] => {
+    const covered = nativeCoverage.get(agent);
+    return [...new Set(sourcePlans
+      .filter((plan) => plan.ownership.skills && !covered?.has(plan.ownershipKey))
+      .map((plan) => plan.source.skills?.value)
+      .filter((source): source is string => !!source))];
+  };
 
   if (!opts.apply) {
     // Preview: resolve what WOULD happen without shelling out.
-    if (wantCodex) {
-      const codex = pluginAdapters.find((a) => a.id === "codex");
-      if (!codex) {
-        for (const p of chosen) {
-          base.installs.push({ agent: "codex", target: p.name, status: "skipped", message: "no Codex plugin adapter" });
-        }
-      } else {
-        for (const p of chosen) {
-          base.installs.push(await codex.installPlugin(p.name, {
-            dryRun: true,
-            provision,
-            sourceRepo: repoOf(p),
-            sourceClonePath: cloneOf(p),
-          }));
-        }
+    for (const adapter of nativeTargets) {
+      for (const p of chosen) {
+        const plan = await planArtifactLifecycle({
+          artifact: planOf(p).artifact,
+          agent: adapter.id,
+          mode: "verified",
+          sourceRequired: adapter.sourceRequired,
+          provision,
+          dryRun: true,
+        });
+        const result = await adapter.installPlugin(p.name, {
+          ...plan.installOptions,
+          dryRun: true,
+        });
+        base.installs.push(result);
+        recordNativeOutcome(adapter.id, plan, result);
       }
     }
-    if (wantCursor) base.cursor = { repos: chosenRepos, results: [] };
-    if (scopedSkillCohort.length && chosenRepos.length) {
-      for (const repo of chosenRepos) base.skills.push({ repo, status: "added", message: "would add" });
+    if (wantCursor) base.cursor = { repos: cursorSources, results: [] };
+    if (scopedSkillCohort.length) {
+      const looseSources = new Set<string>();
+      for (const agent of scopedSkillCohort) {
+        for (const source of looseSourcesFor(agent)) looseSources.add(source);
+      }
+      base.skills.push(...await addSkillSources(
+        [...looseSources],
+        scopedSkillCohort,
+        { dryRun: true },
+      ));
     }
     if (scopedMcpCohort.length) {
       // Read+diff each agent so the dry-run reports only what would actually be added
       // (additive, conflict-safe) — not every bundled server regardless of what's present.
-      const { servers } = await resolvePluginMcpServers(chosen);
-      const serverMap: Record<string, McpServer> = {};
-      for (const s of servers) serverMap[s.name] = s.server;
       for (const agent of scopedMcpCohort) {
+        const { servers } = await resolvePluginMcpServers(loosePluginsFor(agent));
+        const serverMap: Record<string, McpServer> = {};
+        for (const s of servers) serverMap[s.name] = s.server;
         const adapter = findAdapter(agent);
         if (!adapter) {
           base.mcp.push({ agent, added: [], conflicts: [], status: "skipped", message: "no MCP adapter" });
@@ -152,29 +212,36 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   // --- Apply ---
   let step = 0;
   const total =
-    (wantCodex ? chosen.length : 0) +
-    (wantCursor ? chosenRepos.length : 0) +
-    (scopedSkillCohort.length && chosenRepos.length ? 1 : 0) +
+    (nativeTargets.length * chosen.length) +
+    (wantCursor ? cursorSources.length : 0) +
+    (scopedSkillCohort.length && sourcePlans.length ? scopedSkillCohort.length : 0) +
     (scopedMcpCohort.length ? scopedMcpCohort.length : 0);
   const tick = (label: string) => opts.onProgress?.(label, ++step, total);
 
-  // Codex native installs (installPlugin handles provision / covered / fallback).
-  if (wantCodex) {
-    const codex = pluginAdapters.find((a) => a.id === "codex");
-    if (!codex) {
-      for (const p of chosen) {
-        tick(`codex: ${p.name}`);
-        base.installs.push({ agent: "codex", target: p.name, status: "skipped", message: "no Codex plugin adapter" });
-      }
-    } else {
-      for (const p of chosen) {
-        tick(`codex: ${p.name}`);
-        const res = await codex.installPlugin(p.name, { dryRun: false, provision, sourceRepo: repoOf(p), sourceClonePath: cloneOf(p) });
-        base.installs.push(res);
-        // A bundle Codex can't load as a plugin → add its skills to Codex.
-        if (res.skillsFallbackRepo) {
-          base.skills.push(...(await addSkillRepos([res.skillsFallbackRepo], ["codex"])));
-        }
+  // Readable native targets (Codex and Copilot). Each adapter uses its runtime's
+  // authoritative native contract and verifies the resulting install state.
+  for (const adapter of nativeTargets) {
+    for (const p of chosen) {
+      tick(`${adapter.id}: ${p.name}`);
+      const plan = await planArtifactLifecycle({
+        artifact: planOf(p).artifact,
+        agent: adapter.id,
+        mode: "verified",
+        sourceRequired: adapter.sourceRequired,
+        provision,
+        dryRun: false,
+      });
+      const res = await adapter.installPlugin(p.name, {
+        ...plan.installOptions,
+        dryRun: false,
+      });
+      base.installs.push(res);
+      recordNativeOutcome(adapter.id, plan, res);
+      // A bundle this native target couldn't load can still use the explicit
+      // adapter-provided skills fallback. The failed/skipped native result remains
+      // in the report, so this never masquerades as a full plugin success.
+      if (res.skillsFallbackRepo && !skillCohort().includes(adapter.id)) {
+        base.skills.push(...(await addSkillSources([res.skillsFallbackRepo], [adapter.id])));
       }
     }
   }
@@ -182,30 +249,33 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   // Cursor push by source repo (write-only target).
   if (wantCursor) {
     const results: PluginAddCursor["results"] = [];
-    for (const repo of chosenRepos) {
-      tick(`cursor: ${repo}`);
-      const r = await run("npx", ["plugins", "add", repo, "--target", "cursor", "-y"], { timeoutMs: CURSOR_PLUGINS_TIMEOUT_MS });
-      if (r.notFound) results.push({ repo, status: "failed", message: "`npx plugins` not found on PATH" });
-      else if (r.timedOut) results.push({ repo, status: "failed", message: `timed out after ${CURSOR_PLUGINS_TIMEOUT_MS / 1000}s` });
-      else if (!r.ok) results.push({ repo, status: "failed", message: r.stderr.trim() || `exit ${r.exitCode}` });
-      else results.push({ repo, status: "installed" });
+    for (const source of cursorSources) {
+      tick(`cursor: ${source}`);
+      const r = await run("npx", ["plugins", "add", source, "--target", "cursor", "-y"], { timeoutMs: CURSOR_PLUGINS_TIMEOUT_MS });
+      if (r.notFound) results.push({ repo: source, status: "failed", message: "`npx plugins` not found on PATH" });
+      else if (r.timedOut) results.push({ repo: source, status: "failed", message: `timed out after ${CURSOR_PLUGINS_TIMEOUT_MS / 1000}s` });
+      else if (!r.ok) results.push({ repo: source, status: "failed", message: r.stderr.trim() || `exit ${r.exitCode}` });
+      else results.push({ repo: source, status: "installed" });
     }
-    base.cursor = { repos: chosenRepos, results };
+    base.cursor = { repos: cursorSources, results };
   }
 
   // Skills → scoped non-plugin agents.
-  if (scopedSkillCohort.length && chosenRepos.length) {
-    tick(`skills → ${scopedSkillCohort.length} agent(s)`);
-    base.skills.push(...(await addSkillRepos(chosenRepos, scopedSkillCohort)));
+  if (scopedSkillCohort.length) {
+    for (const agent of scopedSkillCohort) {
+      tick(`skills → ${agent}`);
+      const sources = looseSourcesFor(agent);
+      if (sources.length) base.skills.push(...(await addSkillSources(sources, [agent])));
+    }
   }
 
   // Plugin-bundled MCP servers → scoped non-plugin agents (additive, conflict-safe).
   if (scopedMcpCohort.length) {
-    const { servers } = await resolvePluginMcpServers(chosen);
-    const serverMap: Record<string, McpServer> = {};
-    for (const s of servers) serverMap[s.name] = s.server;
     for (const agentId of scopedMcpCohort) {
       tick(`mcp → ${agentId}`);
+      const { servers } = await resolvePluginMcpServers(loosePluginsFor(agentId));
+      const serverMap: Record<string, McpServer> = {};
+      for (const s of servers) serverMap[s.name] = s.server;
       const adapter = findAdapter(agentId);
       if (!adapter) {
         base.mcp.push({ agent: agentId, added: [], conflicts: [], status: "skipped", message: "no MCP adapter" });

@@ -4,21 +4,30 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { codexPluginAdapter, parseCodexPluginList } from "../src/plugins/codex.ts";
 import { claudePluginAdapter, parseClaudeInstalledPlugins } from "../src/plugins/claude.ts";
+import {
+  codexPluginIdentityCandidates,
+  isValidCodexPluginName,
+} from "../src/plugins/shell.ts";
 
 let workDir: string;
 let originalHome: string | undefined;
 let originalPath: string | undefined;
+let originalCodexHome: string | undefined;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "syncthis-plugins-"));
   originalHome = process.env.HOME;
   originalPath = process.env.PATH;
+  originalCodexHome = process.env.CODEX_HOME;
   process.env.HOME = workDir;
+  delete process.env.CODEX_HOME;
 });
 
 afterEach(async () => {
   process.env.HOME = originalHome;
   process.env.PATH = originalPath;
+  if (originalCodexHome == null) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = originalCodexHome;
   await rm(workDir, { recursive: true, force: true });
 });
 
@@ -100,6 +109,11 @@ const CODEX_SAMPLE: CodexRow[] = [
 ];
 
 describe("codex plugin adapter", () => {
+  test("honors CODEX_HOME for its authoritative config location", () => {
+    process.env.CODEX_HOME = join(workDir, "alternate-codex");
+    expect(codexPluginAdapter.configPath()).toBe(join(workDir, "alternate-codex", "config.toml"));
+  });
+
   test("reports only installed plugins from `codex plugin list`", async () => {
     await installFakeCodex(codexTable(CODEX_SAMPLE));
     const r = await codexPluginAdapter.read();
@@ -146,6 +160,23 @@ describe("codex plugin adapter", () => {
       "documents@openai-primary-runtime",
       "foo@plugins-cli",
     ]);
+  });
+});
+
+describe("Codex plugin identity contract", () => {
+  test("accepts only Codex-native ASCII identifier characters", () => {
+    expect(isValidCodexPluginName("alpha-1_beta")).toBe(true);
+    expect(isValidCodexPluginName("github.com-owner-repo")).toBe(false);
+    expect(isValidCodexPluginName("with space")).toBe(false);
+    expect(isValidCodexPluginName("café")).toBe(false);
+  });
+
+  test("returns ordered, target-safe candidates for URL-derived identities", () => {
+    expect(codexPluginIdentityCandidates("plain-plugin")).toEqual(["plain-plugin"]);
+    expect(codexPluginIdentityCandidates("github.com-owner-repo")).toEqual([
+      "github-com-owner-repo",
+    ]);
+    expect(codexPluginIdentityCandidates("not representable!")).toEqual([]);
   });
 });
 

@@ -100,6 +100,33 @@ export function pluginNamesOverlap(a: string, b: string): boolean {
   return pluginIdentityKeys(a).some((k) => bKeys.has(k));
 }
 
+// Codex validates the plugin-name portion of `<name>@<marketplace>` more strictly
+// than Claude and the open-plugin installer. Keep this target contract separate
+// from the broader shell-safety check below: a dot is safe to pass as an argv
+// value, but Codex will refuse to discover or load a plugin whose name contains it.
+export function isValidCodexPluginName(name: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(name);
+}
+
+// Ordered target-native spellings for a cross-agent plugin identity. Preserve a
+// valid source spelling first. URL-derived installer ids are the one intentional
+// adaptation: Claude/open-plugin may store `github.com-owner-repo`, while Codex
+// requires and historically stores `github-com-owner-repo`.
+//
+// Every returned candidate is guaranteed to satisfy Codex's identifier grammar.
+export function codexPluginIdentityCandidates(name: string): string[] {
+  const candidates = new Set<string>();
+  if (isValidCodexPluginName(name)) candidates.add(name);
+  for (const identity of pluginIdentityKeys(name)) {
+    if (isValidCodexPluginName(identity)) candidates.add(identity);
+  }
+  if (name.startsWith("github.com-")) {
+    const adapted = name.replace(/\./g, "-");
+    if (isValidCodexPluginName(adapted)) candidates.add(adapted);
+  }
+  return [...candidates];
+}
+
 // Plugin / marketplace names that flow into a CLI invocation must be flat
 // identifiers — no path separators, no traversal, no NUL.
 export function isSafeIdentifier(name: string): boolean {

@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPluginAdd, pluginAddHasWork } from "../src/plugins/add.ts";
@@ -75,7 +75,11 @@ async function installFakeCodex(listText: string) {
   const script = `#!/bin/sh
 echo "codex $@" >> ${invocationsFile}
 if [ "$1 $2" = "plugin list" ]; then cat ${listFile}; exit 0; fi
-if [ "$1 $2" = "plugin add" ]; then exit 0; fi
+if [ "$1 $2" = "plugin add" ]; then
+  awk -v id="$4" 'index($0, id) == 1 { sub(/not installed/, "installed    ") } { print }' ${listFile} > ${listFile}.next
+  mv ${listFile}.next ${listFile}
+  exit 0
+fi
 exit 0
 `;
   const p = join(binDir, "codex");
@@ -107,6 +111,11 @@ describe("runPluginAdd", () => {
   async function setup(opts: { listExit?: number } = {}) {
     const fooDir = join(workDir, "plugins", "foo");
     await writePluginWithMcp(fooDir, "srv");
+    await mkdir(join(fooDir, "skills", "foo"), { recursive: true });
+    await writeFile(
+      join(fooDir, "skills", "foo", "SKILL.md"),
+      "---\nname: foo\n---\n",
+    );
     await installFakeClaude(
       JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: fooDir }]),
       JSON.stringify([{ name: "mkt", source: "github", repo: "owner/foo" }]),
@@ -172,5 +181,49 @@ describe("runPluginAdd", () => {
     const r = await runPluginAdd({ plugins: ["github.com-owner-tool"], agents: ["codex"], apply: false });
     expect(r.installs).toEqual([{ agent: "codex", target: "github-com-owner-tool@plugins-cli", status: "present" }]);
     expect(pluginAddHasWork(r)).toBe(false);
+  });
+
+  test("apply uses an exact standalone local source for Cursor and loose skills", async () => {
+    const local = join(workDir, "plugins", "standalone");
+    await mkdir(join(local, ".claude-plugin"), { recursive: true });
+    await writeFile(
+      join(local, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "standalone" }),
+    );
+    await mkdir(join(local, "skills", "standalone"), { recursive: true });
+    await writeFile(
+      join(local, "skills", "standalone", "SKILL.md"),
+      "---\nname: standalone\n---\n",
+    );
+    const canonical = await realpath(local);
+    await installFakeClaude(
+      JSON.stringify([{ id: "standalone", enabled: true, installPath: local }]),
+      "[]",
+    );
+    await installFakeNpx();
+
+    const report = await runPluginAdd({
+      plugins: ["standalone"],
+      agents: ["cursor", "opencode"],
+      apply: true,
+    });
+
+    expect(report.cursor?.repos).toEqual([canonical]);
+    expect(report.cursor?.results).toEqual([
+      { repo: canonical, status: "installed" },
+    ]);
+    expect(report.skills).toContainEqual({
+      repo: canonical,
+      status: "added",
+    });
+    const calls = await readInvocations();
+    expect(calls).toContain(
+      `npx plugins add ${canonical} --target cursor -y`,
+    );
+    expect(
+      calls.some((line) =>
+        line.includes(`skills add ${canonical}`) && line.includes("-a opencode")
+      ),
+    ).toBe(true);
   });
 });

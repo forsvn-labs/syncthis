@@ -1,6 +1,21 @@
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { expandHome } from "../io.ts";
+import {
+  ManagedMarketplaceUnsupportedFormatError,
+  prepareManagedCodexMarketplace,
+} from "./managed-marketplace.ts";
 import { parseMarketplaceList, readLocalMarketplace, resolveLocalMarketplace } from "./marketplace.ts";
-import { assertSafeIdentifier, isSafeRepoSlug, parsePluginId, pluginNamesOverlap, run } from "./shell.ts";
+import { findNativePluginManifests, hasSkillManifest } from "./source.ts";
+import {
+  assertSafeIdentifier,
+  codexPluginIdentityCandidates,
+  isSafeRepoSlug,
+  isValidCodexPluginName,
+  parsePluginId,
+  pluginNamesOverlap,
+  run,
+} from "./shell.ts";
 import type {
   PluginAdapter,
   PluginAdapterRead,
@@ -11,10 +26,13 @@ import type {
   PluginUninstallResult,
 } from "./types.ts";
 
-const CONFIG_PATH = "~/.codex/config.toml";
+function resolvedCodexHome(): string {
+  const configured = process.env.CODEX_HOME?.trim();
+  return configured ? resolve(expandHome(configured)) : expandHome("~/.codex");
+}
 
 function resolvedConfigPath(): string {
-  return expandHome(CONFIG_PATH);
+  return join(resolvedCodexHome(), "config.toml");
 }
 
 // The vercel-labs `npx plugins` marketplace — the cross-agent ecosystem syncthis
@@ -102,11 +120,6 @@ export function parseCodexPluginList(text: string): PluginRecord[] {
     .map((r) => ({ name: r.name, marketplace: r.marketplace, version: r.version, enabled: r.enabled, path: r.path }));
 }
 
-// Distinct marketplaces in the snapshot that carry a plugin of this name.
-function marketplacesFor(rows: CodexListRow[], name: string): string[] {
-  return [...new Set(rows.filter((r) => r.name === name && r.marketplace).map((r) => r.marketplace as string))];
-}
-
 // Keys (`name@marketplace`, or bare name) of the *installed* plugins in a snapshot.
 // Used to diff before/after a provisioning `npx plugins add`: a multi-plugin repo
 // installs its canonical plugin under the repo's own plugin.json name — which may
@@ -118,15 +131,552 @@ function installedKeys(rows: CodexListRow[]): Set<string> {
   return new Set(rows.filter((r) => r.installed).map((r) => (r.marketplace ? `${r.name}@${r.marketplace}` : r.name)));
 }
 
+// Rows matching the target-native spellings of a cross-agent identity, ordered by
+// candidate preference and then by the marketplace snapshot's own order.
+function identityRows(rows: CodexListRow[], name: string): CodexListRow[] {
+  const candidates = codexPluginIdentityCandidates(name);
+  return candidates.flatMap((candidate) => rows.filter((r) => r.name === candidate));
+}
+
+function chooseIdentityRow(
+  rows: CodexListRow[],
+  name: string,
+  marketplace?: string,
+): { row?: CodexListRow; ambiguous?: string[] } {
+  const matches = identityRows(rows, name).filter((r) => !marketplace || r.marketplace === marketplace);
+  if (matches.length === 0) return {};
+  if (marketplace) return { row: matches[0] };
+
+  const byPreferredMarketplace = matches.find((r) => r.marketplace === PREFERRED_MARKETPLACE);
+  if (byPreferredMarketplace) return { row: byPreferredMarketplace };
+
+  const marketplaces = [...new Set(matches.map((r) => r.marketplace).filter((m): m is string => !!m))];
+  if (marketplaces.length > 1) return { ambiguous: marketplaces };
+  return { row: matches[0] };
+}
+
+async function verifyInstalled(
+  requestedName: string,
+  marketplace?: string,
+): Promise<{ row?: CodexListRow; error?: string }> {
+  const verify = await run("codex", ["plugin", "list"], { timeoutMs: LIST_TIMEOUT_MS });
+  if (!verify.ok) {
+    return {
+      error: `codex plugin list verification failed: ${verify.stderr.trim() || (verify.notFound ? "codex CLI not found" : `exit ${verify.exitCode}`)}`,
+    };
+  }
+  const match = identityRows(parseCodexListRows(verify.stdout || ""), requestedName).find(
+    (r) => r.installed && (!marketplace || r.marketplace === marketplace),
+  );
+  return match ? { row: match } : {};
+}
+
+async function configuredPluginIds(): Promise<string[]> {
+  let text: string;
+  try {
+    text = await readFile(resolvedConfigPath(), "utf8");
+  } catch {
+    return [];
+  }
+  return [...text.matchAll(/^\s*\[plugins\."([^"]+)"\]\s*$/gm)].map((m) => m[1]!).filter(Boolean);
+}
+
+async function configuredInvalidIdentity(name: string): Promise<string | undefined> {
+  return (await configuredPluginIds()).find((id) => {
+    const parsed = parsePluginId(id);
+    return !isValidCodexPluginName(parsed.name) && pluginNamesOverlap(parsed.name, name);
+  });
+}
+
+// A missing Codex list row is not evidence that a bundle is skills-only: an
+// invalid configured identity produces the same symptom. Only use the skills
+// fallback when the local source positively contains skills and no plugin
+// manifest that Codex/Claude/open-plugin could load or translate.
+async function positivelySkillsOnly(sourceClonePath?: string): Promise<boolean> {
+  if (!sourceClonePath) return false;
+  if ((await findNativePluginManifests(sourceClonePath)).length > 0) return false;
+  return hasSkillManifest(sourceClonePath);
+}
+
 // `codex plugin add <alias>@<mkt>` fails when the marketplace entry's name differs
 // from the underlying plugin.json `name` — the shape of every multi-plugin
-// marketplace that aliases one bundle under several discovery names (browserbase's
-// browse/functions/safe-browser, expo's expo/expo-app-design/…, anthropics'
-// document-skills/claude-api/…). Claude tolerates the mismatch and installs each
-// alias; Codex hard-rejects it. So this is not a real failure — the canonical
-// sibling carries the same bundle, and we fall the alias back to skills.
+// marketplace that aliases one bundle under several discovery names. Claude may
+// tolerate the mismatch while Codex rejects it. The alias is covered only when a
+// fresh native read proves the canonical sibling active; otherwise it is a hard
+// native-format failure, never evidence for loose skills fallback.
 function isNameMismatch(stderr: string): boolean {
   return /does not match marketplace plugin name/i.test(stderr);
+}
+
+type CodexMarketplaceRegistration = {
+  root: string;
+  label: "managed" | "local";
+};
+
+type CodexNativeInstallPlanBase = {
+  target: string;
+  pluginName: string;
+  marketplaceName?: string;
+  registration?: CodexMarketplaceRegistration;
+  dryRunMessage: string;
+  verificationLabel: "managed plugin" | "plugin";
+  handleNameMismatch: boolean;
+  coveredByProvision?: string[];
+};
+
+type CodexNativeInstallPlan = CodexNativeInstallPlanBase & (
+  | { mode: "managed-marketplace" }
+  | { mode: "local-marketplace" }
+  | { mode: "target-marketplace" }
+);
+
+export type CodexInstallPlan =
+  | { mode: "result"; result: PluginInstallResult }
+  | CodexNativeInstallPlan
+  | {
+      mode: "provision";
+      target: string;
+      requestedName: string;
+      sourceRepo: string;
+      sourceClonePath?: string;
+      beforeInstalled: string[];
+    };
+
+function installResult(
+  target: string,
+  status: PluginInstallResult["status"],
+  extra: Omit<PluginInstallResult, "agent" | "target" | "status"> = {},
+): PluginInstallResult {
+  return { agent: "codex", target, status, ...extra };
+}
+
+function resultPlan(result: PluginInstallResult): CodexInstallPlan {
+  return { mode: "result", result };
+}
+
+function failurePlan(target: string, message: string): CodexInstallPlan {
+  return resultPlan(installResult(target, "failed", { message }));
+}
+
+function nativeInstallPlan(
+  mode: CodexNativeInstallPlan["mode"],
+  pluginName: string,
+  marketplaceName: string | undefined,
+  options: Omit<CodexNativeInstallPlan, "mode" | "target" | "pluginName" | "marketplaceName">,
+): CodexNativeInstallPlan {
+  return {
+    mode,
+    target: `${pluginName}@${marketplaceName}`,
+    pluginName,
+    marketplaceName,
+    ...options,
+  };
+}
+
+async function planManagedMarketplace(
+  name: string,
+  opts: PluginInstallOpts,
+): Promise<CodexInstallPlan | undefined> {
+  if (!opts.sourcePluginPath) return undefined;
+
+  const managed = await prepareManagedCodexMarketplace({
+    originalName: name,
+    sourcePluginPath: opts.sourcePluginPath,
+    dryRun: opts.dryRun,
+  });
+  const target = `${managed.pluginName}@${managed.marketplaceName}`;
+  const marketplaceList = await run(
+    "codex",
+    ["plugin", "marketplace", "list"],
+    { timeoutMs: LIST_TIMEOUT_MS },
+  );
+  if (marketplaceList.notFound) return failurePlan(target, "codex CLI not found");
+  if (!marketplaceList.ok) {
+    return failurePlan(
+      target,
+      `cannot inspect Codex marketplaces: ${marketplaceList.stderr.trim() || `exit ${marketplaceList.exitCode}`}`,
+    );
+  }
+
+  const registered = parseMarketplaceList(marketplaceList.stdout || "");
+  const managedRoot = resolve(managed.root);
+  const byName = registered.find((entry) => entry.name === managed.marketplaceName);
+  const byRoot = registered.find((entry) => resolve(entry.root) === managedRoot);
+  if (byName && resolve(byName.root) !== managedRoot) {
+    return failurePlan(
+      target,
+      `managed marketplace name collision: ${managed.marketplaceName} already points to ${byName.root}`,
+    );
+  }
+  if (byRoot && byRoot.name !== managed.marketplaceName) {
+    return failurePlan(
+      target,
+      `managed marketplace root is registered under unexpected identity ${byRoot.name}`,
+    );
+  }
+  const needsRegistration = !byName && !byRoot;
+  const actions = [
+    managed.status === "would-create" ? "would create managed marketplace" : "managed marketplace ready",
+    needsRegistration ? "would register it" : "registration already present",
+    "would install and verify native activation",
+  ];
+  return nativeInstallPlan(
+    "managed-marketplace",
+    managed.pluginName,
+    managed.marketplaceName,
+    {
+      ...(needsRegistration
+        ? { registration: { root: managed.root, label: "managed" as const } }
+        : {}),
+      dryRunMessage: `dry-run (${actions.join("; ")})`,
+      verificationLabel: "managed plugin",
+      handleNameMismatch: false,
+    },
+  );
+}
+
+async function planLocalMarketplace(
+  name: string,
+  opts: PluginInstallOpts,
+  identityCandidates: string[],
+): Promise<CodexInstallPlan | undefined> {
+  if (!opts.sourceClonePath) return undefined;
+
+  const marketplace = await readLocalMarketplace(opts.sourceClonePath);
+  const pluginName = marketplace?.pluginNames.find((candidate) => identityCandidates.includes(candidate));
+  if (!marketplace || !pluginName) return undefined;
+
+  const marketplaceList = await run(
+    "codex",
+    ["plugin", "marketplace", "list"],
+    { timeoutMs: LIST_TIMEOUT_MS },
+  );
+  const existing = marketplaceList.ok ? parseMarketplaceList(marketplaceList.stdout || "") : [];
+  const resolvedMarketplace = resolveLocalMarketplace({
+    existing,
+    name: marketplace.name,
+    clonePath: opts.sourceClonePath,
+  });
+  const registration =
+    resolvedMarketplace.action === "add"
+      ? { root: opts.sourceClonePath, label: "local" as const }
+      : undefined;
+  return nativeInstallPlan(
+    "local-marketplace",
+    pluginName,
+    resolvedMarketplace.name,
+    {
+      ...(registration ? { registration } : {}),
+      dryRunMessage: registration ? "dry-run (would register local marketplace)" : "dry-run",
+      verificationLabel: "plugin",
+      handleNameMismatch: true,
+    },
+  );
+}
+
+function planTargetMarketplace(
+  name: string,
+  opts: PluginInstallOpts,
+  listOk: boolean,
+  listError: string,
+  rows: CodexListRow[],
+  identityCandidates: string[],
+): CodexInstallPlan {
+  if (opts.marketplace) {
+    return nativeInstallPlan(
+      "target-marketplace",
+      identityCandidates[0]!,
+      opts.marketplace,
+      {
+        dryRunMessage: "dry-run",
+        verificationLabel: "plugin",
+        handleNameMismatch: true,
+      },
+    );
+  }
+  if (!listOk) {
+    return failurePlan(
+      name,
+      `cannot resolve marketplace — codex plugin list failed: ${listError}`,
+    );
+  }
+
+  const choice = chooseIdentityRow(rows, name);
+  if (choice.row) {
+    return nativeInstallPlan(
+      "target-marketplace",
+      choice.row.name,
+      choice.row.marketplace,
+      {
+        dryRunMessage: "dry-run",
+        verificationLabel: "plugin",
+        handleNameMismatch: true,
+      },
+    );
+  }
+  if (choice.ambiguous) {
+    return resultPlan(
+      installResult(name, "skipped", {
+        message: `ambiguous across Codex marketplaces (${choice.ambiguous.join(", ")}) — pass <name>@<marketplace> to choose`,
+      }),
+    );
+  }
+  if (opts.provision && opts.sourceRepo && isSafeRepoSlug(opts.sourceRepo)) {
+    return {
+      mode: "provision",
+      target: `${identityCandidates[0]}@(${opts.sourceRepo})`,
+      requestedName: name,
+      sourceRepo: opts.sourceRepo,
+      sourceClonePath: opts.sourceClonePath,
+      beforeInstalled: [...installedKeys(rows)],
+    };
+  }
+  return resultPlan(
+    installResult(name, "skipped", {
+      message: opts.provision
+        ? "no usable source repo to provision from — its marketplace isn't a github owner/repo syncthis can register in Codex"
+        : "no registered Codex marketplace provides it (provisioning disabled via --no-provision)",
+    }),
+  );
+}
+
+export async function planCodexPluginInstall(
+  name: string,
+  opts: PluginInstallOpts,
+): Promise<CodexInstallPlan> {
+  try {
+    assertSafeIdentifier(name, "plugin name");
+    if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
+
+    const identityCandidates = codexPluginIdentityCandidates(name);
+    if (identityCandidates.length === 0) {
+      return failurePlan(
+        name,
+        `plugin name cannot be represented by Codex (allowed: ASCII letters, digits, \`_\`, and \`-\`): ${JSON.stringify(name)}`,
+      );
+    }
+
+    const list = await run("codex", ["plugin", "list"], { timeoutMs: LIST_TIMEOUT_MS });
+    if (list.notFound) return failurePlan(name, "codex CLI not found");
+    const rows = list.ok ? parseCodexListRows(list.stdout || "") : [];
+    const present = identityRows(rows, name).find(
+      (row) => row.installed && (!opts.marketplace || row.marketplace === opts.marketplace),
+    );
+    if (present) {
+      return resultPlan(
+        installResult(
+          present.marketplace ? `${present.name}@${present.marketplace}` : present.name,
+          "present",
+        ),
+      );
+    }
+
+    const managed = await planManagedMarketplace(name, opts);
+    if (managed) return managed;
+    const local = await planLocalMarketplace(name, opts, identityCandidates);
+    if (local) return local;
+    return planTargetMarketplace(
+      name,
+      opts,
+      list.ok,
+      list.stderr.trim() || `exit ${list.exitCode}`,
+      rows,
+      identityCandidates,
+    );
+  } catch (err) {
+    if (err instanceof ManagedMarketplaceUnsupportedFormatError) {
+      return resultPlan(
+        installResult(name, "skipped", {
+          message: err.message,
+          unsupportedFormat: true,
+        }),
+      );
+    }
+    return failurePlan(name, err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function planAfterProvision(
+  plan: Extract<CodexInstallPlan, { mode: "provision" }>,
+): Promise<CodexInstallPlan> {
+  const provision = await run(
+    "npx",
+    ["plugins", "add", plan.sourceRepo, "--target", "codex", "-y"],
+    { timeoutMs: 180_000 },
+  );
+  if (provision.notFound) {
+    return resultPlan(
+      installResult(plan.requestedName, "skipped", {
+        message: "cannot provision — `npx plugins` not found",
+      }),
+    );
+  }
+  if (!provision.ok) {
+    return failurePlan(
+      plan.requestedName,
+      `provision failed (npx plugins add ${plan.sourceRepo}): ${provision.stderr.trim() || `exit ${provision.exitCode}`}`,
+    );
+  }
+
+  const freshList = await run("codex", ["plugin", "list"], { timeoutMs: LIST_TIMEOUT_MS });
+  if (!freshList.ok) {
+    return failurePlan(
+      plan.requestedName,
+      `provisioned, but verify failed (codex plugin list): ${freshList.stderr.trim() || `exit ${freshList.exitCode}`}`,
+    );
+  }
+
+  const rows = parseCodexListRows(freshList.stdout || "");
+  const newlyInstalled = [...installedKeys(rows)].filter(
+    (key) => !plan.beforeInstalled.includes(key),
+  );
+  const installed = identityRows(rows, plan.requestedName).find((row) => row.installed);
+  if (installed) {
+    return resultPlan(
+      installResult(
+        installed.marketplace ? `${installed.name}@${installed.marketplace}` : installed.name,
+        "installed",
+      ),
+    );
+  }
+
+  const choice = chooseIdentityRow(rows, plan.requestedName);
+  if (choice.row) {
+    return nativeInstallPlan(
+      "target-marketplace",
+      choice.row.name,
+      choice.row.marketplace,
+      {
+        dryRunMessage: "dry-run",
+        verificationLabel: "plugin",
+        handleNameMismatch: true,
+        coveredByProvision: newlyInstalled,
+      },
+    );
+  }
+  if (choice.ambiguous) {
+    return resultPlan(
+      installResult(plan.requestedName, "skipped", {
+        message: `ambiguous across Codex marketplaces (${choice.ambiguous.join(", ")}) — pass <name>@<marketplace> to choose`,
+      }),
+    );
+  }
+  if (newlyInstalled.length > 0) {
+    return resultPlan(
+      installResult(plan.requestedName, "skipped", {
+        coveredBy: newlyInstalled.join(", "),
+        message: `covered — provisioning ${plan.sourceRepo} installed ${newlyInstalled.join(", ")} as a Codex plugin`,
+      }),
+    );
+  }
+
+  const invalidConfigured = await configuredInvalidIdentity(plan.requestedName);
+  if (invalidConfigured) {
+    return failurePlan(
+      plan.requestedName,
+      `provisioning wrote \`${invalidConfigured}\`, but Codex rejects that plugin identity ` +
+        "(allowed: ASCII letters, digits, `_`, and `-`); the bundle was not installed and is not classified as skills-only",
+    );
+  }
+  if (await positivelySkillsOnly(plan.sourceClonePath)) {
+    return resultPlan(
+      installResult(plan.requestedName, "skipped", {
+        message: "source positively contains skills but no plugin manifest — adding its skills to Codex instead",
+        skillsFallbackRepo: plan.sourceRepo,
+      }),
+    );
+  }
+  return failurePlan(
+    plan.requestedName,
+    "provisioning exited successfully, but a fresh `codex plugin list` exposed no loadable plugin; " +
+      "refusing to misclassify a configured, invalid, or unloadable plugin as skills-only",
+  );
+}
+
+async function registerInstallVerify(
+  plan: CodexNativeInstallPlan,
+  dryRun: boolean,
+): Promise<PluginInstallResult> {
+  if (dryRun) return installResult(plan.target, "installed", { message: plan.dryRunMessage });
+
+  if (plan.registration) {
+    const registration = await run(
+      "codex",
+      ["plugin", "marketplace", "add", plan.registration.root],
+      { timeoutMs: ADD_TIMEOUT_MS },
+    );
+    if (registration.notFound) return installResult(plan.target, "failed", { message: "codex CLI not found" });
+    if (!registration.ok) {
+      return installResult(plan.target, "failed", {
+        message:
+          `register ${plan.registration.label} marketplace failed: ` +
+          (registration.stderr.trim() || `exit ${registration.exitCode}`),
+      });
+    }
+  }
+
+  const add = await run("codex", ["plugin", "add", "--", plan.target], {
+    timeoutMs: ADD_TIMEOUT_MS,
+  });
+  if (add.notFound) return installResult(plan.target, "failed", { message: "codex CLI not found" });
+  if (!add.ok) {
+    if (plan.handleNameMismatch && isNameMismatch(add.stderr)) {
+      const canonical = add.stderr.match(/plugin\.json name [`'"]([^`'"]+)[`'"]/i)?.[1];
+      const verifiedCanonical = canonical ? await verifyInstalled(canonical) : {};
+      const coveredBy = canonical && verifiedCanonical.row
+        ? canonical
+        : plan.coveredByProvision?.length
+          ? plan.coveredByProvision.join(", ")
+          : undefined;
+      if (coveredBy) {
+        return installResult(plan.target, "skipped", {
+          coveredBy,
+          message:
+            `covered by the bundle's canonical plugin${canonical ? ` \`${canonical}\`` : ""} ` +
+            "on Codex — not re-added as skills",
+        });
+      }
+      return installResult(plan.target, "failed", {
+        message:
+          `Codex rejected \`${plan.pluginName}\` because its plugin.json declares a different name` +
+          (canonical ? ` (\`${canonical}\`)` : "") +
+          "; this is an unloadable native plugin, not a skills-only bundle",
+      });
+    }
+    return installResult(plan.target, "failed", {
+      message: add.stderr.trim() || `exit ${add.exitCode}`,
+    });
+  }
+
+  const verified = await verifyInstalled(plan.pluginName, plan.marketplaceName);
+  if (verified.error) return installResult(plan.target, "failed", { message: verified.error });
+  if (!verified.row) {
+    return installResult(plan.target, "failed", {
+      message:
+        "codex plugin add exited successfully, but a fresh `codex plugin list` did not report " +
+        `the ${plan.verificationLabel} installed`,
+    });
+  }
+  return installResult(
+    `${verified.row.name}@${verified.row.marketplace ?? plan.marketplaceName}`,
+    "installed",
+  );
+}
+
+async function executeCodexInstallPlan(
+  plan: CodexInstallPlan,
+  dryRun: boolean,
+): Promise<PluginInstallResult> {
+  if (plan.mode === "result") return plan.result;
+  if (plan.mode === "provision") {
+    if (dryRun) {
+      return installResult(plan.target, "installed", {
+        message: "dry-run (would provision)",
+      });
+    }
+    return executeCodexInstallPlan(await planAfterProvision(plan), false);
+  }
+  return registerInstallVerify(plan, dryRun);
 }
 
 export const codexPluginAdapter: PluginAdapter = {
@@ -148,253 +698,14 @@ export const codexPluginAdapter: PluginAdapter = {
   },
 
   async installPlugin(name: string, opts: PluginInstallOpts): Promise<PluginInstallResult> {
-    try {
-      assertSafeIdentifier(name, "plugin name");
-      if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
-    } catch (err) {
-      return { agent: "codex", target: name, status: "failed", message: (err as Error).message };
-    }
+    return executeCodexInstallPlan(await planCodexPluginInstall(name, opts), opts.dryRun);
+  },
 
-    const listRes = await run("codex", ["plugin", "list"], { timeoutMs: LIST_TIMEOUT_MS });
-    if (listRes.notFound) return { agent: "codex", target: name, status: "failed", message: "codex CLI not found" };
-    const rows = listRes.ok ? parseCodexListRows(listRes.stdout || "") : [];
-
-    // Already installed? (real install state, not config registration.)
-    const present = rows.find(
-      (r) => r.installed && pluginNamesOverlap(r.name, name) && (!opts.marketplace || r.marketplace === opts.marketplace),
-    );
-    if (present) {
-      return { agent: "codex", target: present.marketplace ? `${present.name}@${present.marketplace}` : present.name, status: "present" };
-    }
-
-    // Preferred mechanism: install from the SOURCE agent's local marketplace clone.
-    // Register the clone on Codex (idempotent — reuse an existing marketplace by name
-    // or root, never re-add) and install `name@<derived-marketplace>`. Network-free;
-    // avoids the `npx plugins` provisioning that produced the duplicate/orphaned
-    // marketplace registrations (`personal` rooted at $HOME, dangling `@plugins-cli`).
-    // Only when a clone path is supplied; absent it, fall through to the legacy path.
-    if (opts.sourceClonePath) {
-      const mkt = await readLocalMarketplace(opts.sourceClonePath);
-      // Only take the local path when the clone's manifest actually declares this
-      // plugin under `name`. Agent-local install ids can differ from the marketplace
-      // entry name — URL-named `github.com-*` ids, or multi-plugin aliases — and
-      // `plugin add name@mkt` wouldn't resolve; those fall through to the legacy
-      // resolution/provision path (which handles coverage and the mismatch error).
-      if (mkt && mkt.pluginNames.includes(name)) {
-        const mlist = await run("codex", ["plugin", "marketplace", "list"], { timeoutMs: LIST_TIMEOUT_MS });
-        const existing = mlist.ok ? parseMarketplaceList(mlist.stdout || "") : [];
-        const resolved = resolveLocalMarketplace({ existing, name: mkt.name, clonePath: opts.sourceClonePath });
-        const target = `${name}@${resolved.name}`;
-        if (opts.dryRun) {
-          return {
-            agent: "codex",
-            target,
-            status: "installed",
-            message: resolved.action === "add" ? "dry-run (would register local marketplace)" : "dry-run",
-          };
-        }
-        if (resolved.action === "add") {
-          const reg = await run("codex", ["plugin", "marketplace", "add", opts.sourceClonePath], { timeoutMs: ADD_TIMEOUT_MS });
-          if (reg.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };
-          if (!reg.ok) {
-            return {
-              agent: "codex",
-              target,
-              status: "failed",
-              message: `register local marketplace failed: ${reg.stderr.trim() || `exit ${reg.exitCode}`}`,
-            };
-          }
-        }
-        const add = await run("codex", ["plugin", "add", "--", target], { timeoutMs: ADD_TIMEOUT_MS });
-        if (add.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };
-        if (add.ok) return { agent: "codex", target, status: "installed" };
-        // Same alias / name-mismatch tolerance as the marketplace-resolution path: an
-        // alias whose plugin.json name differs is covered by its canonical sibling if
-        // that's already installed, else falls back to skills (gated on provisioning,
-        // since the fallback is a network `npx skills add`).
-        if (isNameMismatch(add.stderr)) {
-          const canonical = add.stderr.match(/plugin\.json name [`'"]([^`'"]+)[`'"]/i)?.[1];
-          if (canonical && rows.some((r) => r.installed && r.name === canonical)) {
-            return {
-              agent: "codex",
-              target,
-              status: "skipped",
-              coveredBy: canonical,
-              message: `covered by the bundle's canonical plugin \`${canonical}\` on Codex — not re-added as skills`,
-            };
-          }
-          return {
-            agent: "codex",
-            target,
-            status: "skipped",
-            message: opts.provision
-              ? `Codex won't load this alias (its plugin.json name differs from \`${name}\`) — added to Codex as skills instead`
-              : `Codex won't load this alias (its plugin.json name differs from \`${name}\`) — skipped (skills-fallback disabled via --no-provision)`,
-            ...(opts.provision && opts.sourceRepo && isSafeRepoSlug(opts.sourceRepo)
-              ? { skillsFallbackRepo: opts.sourceRepo }
-              : {}),
-          };
-        }
-        return { agent: "codex", target, status: "failed", message: add.stderr.trim() || `exit ${add.exitCode}` };
-      }
-      // No manifest / the plugin name isn't a declared entry (URL-named id or alias)
-      // → fall through to the marketplace-resolution / provision path below.
-    }
-
-    // `codex plugin add` rejects a bare name — it needs <name>@<marketplace>.
-    // The source agent's marketplace tag doesn't exist in Codex, so resolve the
-    // marketplace from Codex's own snapshot (any plugin-list row for this name).
-    // Plugins installed by a provisioning `npx plugins add` this call (canonical
-    // names that may differ from the one we asked for). Hoisted so the name-mismatch
-    // handler below can tell whether the bundle's canonical plugin just landed.
-    let newlyInstalled: string[] = [];
-    let marketplace = opts.marketplace;
-    if (!marketplace) {
-      if (!listRes.ok) {
-        return {
-          agent: "codex",
-          target: name,
-          status: "failed",
-          message: `cannot resolve marketplace — codex plugin list failed: ${listRes.stderr.trim() || `exit ${listRes.exitCode}`}`,
-        };
-      }
-      let candidates = marketplacesFor(rows, name);
-
-      // No marketplace yet, but with provisioning (on by default) we can register
-      // the plugin's source repo into Codex via the open-plugin installer, then
-      // retry. `npx plugins add <repo> --target codex` also INSTALLS the repo's
-      // canonical plugin — so after it, either this exact name resolves, or the
-      // bundle landed under its own (different) name. Re-read and diff to tell.
-      let provisioned = false;
-      if (candidates.length === 0 && opts.provision && opts.sourceRepo && isSafeRepoSlug(opts.sourceRepo)) {
-        if (opts.dryRun) {
-          return { agent: "codex", target: `${name}@(${opts.sourceRepo})`, status: "installed", message: "dry-run (would provision)" };
-        }
-        const before = installedKeys(rows);
-        const prov = await run("npx", ["plugins", "add", opts.sourceRepo, "--target", "codex", "-y"], { timeoutMs: 180_000 });
-        if (prov.notFound) {
-          return { agent: "codex", target: name, status: "skipped", message: "cannot provision — `npx plugins` not found" };
-        }
-        if (!prov.ok) {
-          // The provision we were explicitly asked to do actually errored (bad
-          // repo, network, auth, timeout) — surface the cause as a real failure,
-          // not a benign skip, so it exits non-zero instead of looking like a no-op.
-          return {
-            agent: "codex",
-            target: name,
-            status: "failed",
-            message: `provision failed (npx plugins add ${opts.sourceRepo}): ${prov.stderr.trim() || `exit ${prov.exitCode}`}`,
-          };
-        }
-        provisioned = true;
-        const reRead = await run("codex", ["plugin", "list"], { timeoutMs: LIST_TIMEOUT_MS });
-        if (reRead.ok) {
-          const afterRows = parseCodexListRows(reRead.stdout || "");
-          candidates = marketplacesFor(afterRows, name);
-          newlyInstalled = [...installedKeys(afterRows)].filter((k) => !before.has(k));
-        } else {
-          // Provision succeeded but we can't verify the result — don't pretend it's
-          // a benign "nothing to install" skip; report it as a failure with the cause.
-          return {
-            agent: "codex",
-            target: name,
-            status: "failed",
-            message: `provisioned, but verify failed (codex plugin list): ${reRead.stderr.trim() || `exit ${reRead.exitCode}`}`,
-          };
-        }
-      }
-
-      if (candidates.length === 1) {
-        marketplace = candidates[0];
-      } else if (candidates.length === 0) {
-        // Codex has no marketplace entry for this exact name. Not a failure — but
-        // what we do next depends on what provisioning achieved:
-        if (provisioned && newlyInstalled.length > 0) {
-          // The repo's canonical plugin installed under its own name (≠ the Claude
-          // name we asked for). The bundle IS on Codex as a plugin — content
-          // covered, and adding its skills loosely would duplicate. No fallback.
-          return {
-            agent: "codex",
-            target: name,
-            status: "skipped",
-            coveredBy: newlyInstalled.join(", "),
-            message: `covered — provisioning ${opts.sourceRepo} installed ${newlyInstalled.join(", ")} as a Codex plugin`,
-          };
-        }
-        // Otherwise nothing loadable came from the repo (skills-only bundle), or we
-        // couldn't provision at all (no usable repo, or --no-provision).
-        const message = provisioned
-          ? "provisioned, but Codex's loader exposes no plugin — skills-only bundle; adding its skills to Codex instead"
-          : opts.provision
-            ? "no usable source repo to provision from — its marketplace isn't a github owner/repo syncthis can register in Codex"
-            : "no registered Codex marketplace provides it (provisioning disabled via --no-provision)";
-        // When provisioning ran but exposed no plugin, hand the source repo back so
-        // the mirror can add its skills to Codex via `npx skills add`. sourceRepo is
-        // present and slug-validated here: provisioning required it (guard above).
-        return {
-          agent: "codex",
-          target: name,
-          status: "skipped",
-          message,
-          ...(provisioned ? { skillsFallbackRepo: opts.sourceRepo } : {}),
-        };
-      } else if (candidates.includes(PREFERRED_MARKETPLACE)) {
-        // Ambiguous, but prefer plugins-cli — the npx-plugins ecosystem these
-        // Claude plugins came from — over Codex/OpenAI-bundled marketplaces.
-        marketplace = PREFERRED_MARKETPLACE;
-      } else {
-        return {
-          agent: "codex",
-          target: name,
-          status: "skipped",
-          message: `ambiguous across Codex marketplaces (${candidates.join(", ")}) — pass <name>@<marketplace> to choose`,
-        };
-      }
-    }
-
-    const target = `${name}@${marketplace}`;
-    if (opts.dryRun) return { agent: "codex", target, status: "installed", message: "dry-run" };
-    const res = await run("codex", ["plugin", "add", "--", target], { timeoutMs: ADD_TIMEOUT_MS });
-    if (res.notFound) return { agent: "codex", target, status: "failed", message: "codex CLI not found" };
-    if (!res.ok) {
-      // A multi-plugin marketplace aliases one bundle under several names; Codex
-      // rejects every alias whose plugin.json name differs from the entry name.
-      // That's not a real failure — the canonical sibling carries the bundle. The
-      // mismatch error names that canonical plugin (`plugin.json name \`X\``). If X is
-      // already installed on Codex (a prior run / sibling) OR this run's provision
-      // just installed it, the bundle's skills are here as a namespaced plugin —
-      // mark covered, NO skills fallback (re-adding them flat would duplicate). Only
-      // when the canonical genuinely isn't present do we fall back to skills.
-      if (isNameMismatch(res.stderr)) {
-        const canonical = res.stderr.match(/plugin\.json name [`'"]([^`'"]+)[`'"]/i)?.[1];
-        const canonicalPresent =
-          (!!canonical && rows.some((r) => r.installed && r.name === canonical)) || newlyInstalled.length > 0;
-        if (canonicalPresent) {
-          return {
-            agent: "codex",
-            target,
-            status: "skipped",
-            coveredBy: canonical ?? newlyInstalled.join(", "),
-            message: `covered by the bundle's canonical plugin${canonical ? ` \`${canonical}\`` : ""} on Codex — not re-added as skills`,
-          };
-        }
-        return {
-          agent: "codex",
-          target,
-          status: "skipped",
-          message: opts.provision
-            ? `Codex won't load this alias (its plugin.json name differs from \`${name}\`) — added to Codex as skills instead`
-            : `Codex won't load this alias (its plugin.json name differs from \`${name}\`) — skipped (skills-fallback disabled via --no-provision)`,
-          // Gate the skills-fallback on provisioning, like the candidates===0 branch:
-          // --no-provision means no network skills add (documented contract).
-          ...(opts.provision && opts.sourceRepo && isSafeRepoSlug(opts.sourceRepo)
-            ? { skillsFallbackRepo: opts.sourceRepo }
-            : {}),
-        };
-      }
-      return { agent: "codex", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
-    }
-    return { agent: "codex", target, status: "installed" };
+  async previewInstallPlugin(
+    name: string,
+    opts: PluginInstallOpts,
+  ): Promise<PluginInstallResult> {
+    return codexPluginAdapter.installPlugin(name, { ...opts, dryRun: true });
   },
 
   // Guarded uninstall — reached only by `syncthis plugin rm`. Reads install truth

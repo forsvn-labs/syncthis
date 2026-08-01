@@ -1,15 +1,17 @@
 import { claudePluginAdapter } from "./claude.ts";
+import { copilotPluginAdapter } from "./copilot.ts";
 import { codexPluginAdapter } from "./codex.ts";
 import type { PluginAdapter, PluginAdapterRead } from "./types.ts";
 
-// Plugin adapters: agents with a native bundle-plugin CLI that can be read
-// (plugin list) and added to (install) — Claude (`claude plugin install`) and
-// Codex (`codex plugin add`). Install is additive only; there is no uninstall
-// path (syncthis never removes a plugin). Cursor is also a plugin target but write-only
-// (no list CLI), so it's handled separately in the mirror via `npx plugins add
-// --target cursor` rather than as an adapter here. OpenCode plugins are npm
-// modules in a different cohort entirely — out of scope.
-export const pluginAdapters: PluginAdapter[] = [claudePluginAdapter, codexPluginAdapter];
+// Readable native plugin targets proven by installed CLI contracts.
+// Kimi has no proven non-interactive native plugin ABI in the supported toolchain,
+// so it deliberately remains outside this registry and receives exact per-artifact
+// skills/MCP degradation. Cursor remains write-only and is handled separately.
+export const pluginAdapters: PluginAdapter[] = [
+  claudePluginAdapter,
+  codexPluginAdapter,
+  copilotPluginAdapter,
+];
 
 export async function listPlugins(): Promise<PluginAdapterRead[]> {
   return Promise.all(pluginAdapters.map((a) => a.read()));

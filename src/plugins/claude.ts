@@ -1,4 +1,8 @@
 import { expandHome, readJson } from "../io.ts";
+import {
+  validateLocalPluginSource,
+  type ValidatedPluginRoot,
+} from "./local-source.ts";
 import { assertSafeIdentifier, parsePluginId, run } from "./shell.ts";
 import type {
   PluginAdapter,
@@ -53,6 +57,7 @@ type ClaudeKnownMarketplaceEntry = {
 // also clone, so they get longer.
 const READ_TIMEOUT_MS = 60_000;
 const INSTALL_TIMEOUT_MS = 180_000;
+const PLUGINS_TARGET = "claude-code";
 
 function resolvedConfigPath(): string {
   return expandHome(CONFIG_PATH);
@@ -68,6 +73,14 @@ function pluginRecord(id: string, fields: ClaudeInstalledPluginEntry): PluginRec
     scope: typeof fields.scope === "string" ? fields.scope : undefined,
     path: typeof fields.installPath === "string" ? fields.installPath : undefined,
   };
+}
+
+function pluginMatches(
+  plugin: PluginRecord,
+  name: string,
+  marketplace?: string,
+): boolean {
+  return plugin.name === name && (!marketplace || plugin.marketplace === marketplace);
 }
 
 function parseCliPluginList(raw: unknown): PluginRecord[] | null {
@@ -226,13 +239,69 @@ export const claudePluginAdapter: PluginAdapter = {
     // Skip if already present in the canonical identity.
     const read = await this.read();
     if (!read.error) {
-      const found = read.plugins.find((p) => p.name === name && (!opts.marketplace || p.marketplace === opts.marketplace));
+      const found = read.plugins.find((p) => pluginMatches(p, name, opts.marketplace));
       if (found) return { agent: "claude-code", target, status: "present" };
     }
+    let standaloneSource: ValidatedPluginRoot | undefined;
+    if (opts.sourcePluginPath) {
+      try {
+        standaloneSource = await validateLocalPluginSource(
+          opts.sourcePluginPath,
+          { requireNativeManifest: true },
+        );
+      } catch (err) {
+        return {
+          agent: "claude-code",
+          target,
+          status: "failed",
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
     if (opts.dryRun) return { agent: "claude-code", target, status: "installed", message: "dry-run" };
-    const res = await run("claude", ["plugin", "install", "--yes", "--", target], { timeoutMs: INSTALL_TIMEOUT_MS });
-    if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
+    const res = standaloneSource
+      ? await run("npx", ["plugins", "add", standaloneSource, "--target", PLUGINS_TARGET, "-y"], {
+          timeoutMs: INSTALL_TIMEOUT_MS,
+        })
+      : await run("claude", ["plugin", "install", "--yes", "--", target], { timeoutMs: INSTALL_TIMEOUT_MS });
+    if (res.notFound) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: standaloneSource ? "`npx plugins` not found on PATH" : "claude CLI not found",
+      };
+    }
+    if (res.timedOut) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: `timed out after ${INSTALL_TIMEOUT_MS / 1000}s`,
+      };
+    }
     if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
+
+    const verified = await this.read();
+    if (verified.error) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: `install exited successfully, but fresh native state could not be read: ${verified.error}`,
+      };
+    }
+    const installed = verified.plugins.find(
+      (plugin) => pluginMatches(plugin, name, opts.marketplace) && plugin.enabled !== false,
+    );
+    if (!installed) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: "Claude reported success, but a fresh native read did not show the plugin installed and active",
+      };
+    }
     return { agent: "claude-code", target, status: "installed" };
   },
 
@@ -248,7 +317,7 @@ export const claudePluginAdapter: PluginAdapter = {
     const target = opts.marketplace ? `${name}@${opts.marketplace}` : name;
     const read = await this.read();
     if (!read.error) {
-      const found = read.plugins.find((p) => p.name === name && (!opts.marketplace || p.marketplace === opts.marketplace));
+      const found = read.plugins.find((p) => pluginMatches(p, name, opts.marketplace));
       if (!found) return { agent: "claude-code", target, status: "absent" };
     }
     if (opts.dryRun) return { agent: "claude-code", target, status: "uninstalled", message: "dry-run" };
@@ -259,6 +328,24 @@ export const claudePluginAdapter: PluginAdapter = {
     const res = await run("claude", args, { timeoutMs: INSTALL_TIMEOUT_MS });
     if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
     if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
+
+    const verified = await this.read();
+    if (verified.error) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: `uninstall exited successfully, but fresh native state could not be read: ${verified.error}`,
+      };
+    }
+    if (verified.plugins.some((plugin) => pluginMatches(plugin, name, opts.marketplace))) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: "Claude reported success, but a fresh native read still shows the plugin installed",
+      };
+    }
     return { agent: "claude-code", target, status: "uninstalled" };
   },
 };
