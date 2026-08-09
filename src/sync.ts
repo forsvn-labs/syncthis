@@ -18,6 +18,8 @@ import {
   type RunPluginReconcileOptions,
 } from "./plugins/reconcile.ts";
 import { pluginReconcileTargets } from "./plugins/targets.ts";
+import { composePluginOutcomes } from "./plugins/outcome.ts";
+import { resolvePluginStoreRoot } from "./plugins/store.ts";
 import type { PluginSkillsReport } from "./skills.ts";
 import type { AdapterRead, AdapterWriteResult, AgentId, McpServer } from "./types.ts";
 
@@ -32,12 +34,17 @@ export type { Conflict, DirectionalDiff };
 
 export type SyncOptions = {
   dryRun?: boolean;
+  /** @deprecated Internal alias for skipBridge until the CLI slice is migrated. */
   skipSkills?: boolean;
-  /** Internal MCP-only mode; unlike --no-skills, this suppresses plugin reconciliation. */
+  /** Suppress the per-plugin degradation/reach bridge after reconciliation. */
+  skipBridge?: boolean;
+  /** Compatibility option: skip plugin reconciliation and its bridge. */
   skipPlugins?: boolean;
   onPluginSkillProgress?: (repo: string, i: number, total: number) => void;
   /** Test/control-plane injection; production defaults to the native reconciler. */
   reconcilePlugins?: (opts: RunPluginReconcileOptions) => Promise<PluginReconcileReport>;
+  /** Optional content-addressed package store; production resolves a safe default. */
+  storeRoot?: string;
   /** Test/control-plane injection; production defaults to targeted degradation. */
   degradePlugins?: (opts: RunPluginDegradationOptions) => Promise<PluginDegradationReport>;
   pluginTargets?: PluginReconcileTarget[];
@@ -129,72 +136,46 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncReport> {
   const dryRun = opts.dryRun ?? false;
   const reconcile = opts.reconcilePlugins ?? runPluginReconcile;
   const degrade = opts.degradePlugins ?? runPluginDegradation;
-  // Plugin activation is resolved first. MCP union remains independent and still
-  // runs after plugin failures so one broken runtime cannot block healthy MCP
-  // propagation to every other agent.
-  const plugins = opts.skipPlugins
+
+  // Root sync owns plugin inventory/reconciliation, then applies only the
+  // targeted per-plugin degradation/reach bridge. MCP union and blanket skill
+  // update remain separate legacy/internal paths.
+  const reconciledPlugins = opts.skipPlugins
     ? skippedPluginReconcileReport(dryRun)
     : await reconcile({
         dryRun,
         targets: opts.pluginTargets ?? pluginReconcileTargets(),
+        storeRoot: opts.storeRoot ?? resolvePluginStoreRoot(),
       });
 
-  const reads = await Promise.all(adapters.map((a) => a.read()));
-  const { union, conflicts } = computeUnion(reads);
-  const conflictNames = new Set(conflicts.map((c) => c.name));
-  const readsByAgent = new Map(reads.map((r) => [r.agent, r]));
-
-  const writes = await Promise.all(
-    adapters.map((a) => {
-      const read = readsByAgent.get(a.id)!;
-      const own = read.servers;
-      const final: Record<string, McpServer> = { ...union };
-      for (const name of conflictNames) {
-        if (own[name]) final[name] = own[name];
-      }
-      if (!read.error && Object.keys(final).length === 0 && Object.keys(own).length === 0) {
-        return {
-          agent: a.id,
-          path: read.path,
-          status: "skipped",
-          message: "nothing to sync",
-        } satisfies AdapterWriteResult;
-      }
-      return a.write(final, { dryRun });
-    }),
-  );
-
-  // Native activation and the MCP union own their primary paths first. Only then
-  // apply explicit per-artifact/per-agent fallback decisions; the degradation
-  // executor is additive and cannot fan content back into successful native
-  // targets. --no-skills suppresses only its loose-skill component.
-  const pluginDegradation = opts.skipPlugins
+  const pluginDegradation = opts.skipPlugins || opts.skipBridge || opts.skipSkills
     ? skippedPluginDegradationReport(dryRun)
     : await degrade({
-        reconcile: plugins,
-        includeSkills: !opts.skipSkills,
+        reconcile: reconciledPlugins,
+        includeSkills: true,
         includeMcp: true,
       });
+
+  // Native reconciliation cannot know the final public outcome until the
+  // targeted projections have run. Recompose by concrete artifact + agent so
+  // conflicts, skipped portable content, and mixed projection failures are not
+  // reported as successful adaptation.
+  const plugins: PluginReconcileReport = {
+    ...reconciledPlugins,
+    results: composePluginOutcomes(reconciledPlugins.results, pluginDegradation.results),
+    failures: reconciledPlugins.failures,
+  };
 
   const report: SyncReport = {
     ok: true,
     plugins,
     pluginDegradation,
-    reads,
-    union,
-    conflicts,
-    writes,
+    reads: [],
+    union: {},
+    conflicts: [],
+    writes: [],
   };
-
-  if (opts.skipSkills) {
-    report.skills = { ran: false, ok: true, message: "skipped (--no-skills)" };
-    report.ok = !syncHasFailures(report);
-    return report;
-  }
-
-  report.skills = dryRun ? { ran: false, ok: true, message: "skipped (dry-run)" } : await runSkillsUpdate();
   report.ok = !syncHasFailures(report);
-
   return report;
 }
 

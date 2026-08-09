@@ -44,6 +44,10 @@ export type PluginDegradationResult = {
   conflicts?: string[];
   skipped?: PluginMcpSkip[];
   message?: string;
+  /** True only when the exact projection is known to be reachable. */
+  reachProven?: boolean;
+  /** Work was unresolved (conflict, skipped item, or incomplete projection). */
+  unresolved?: boolean;
 };
 
 export type EligiblePluginDegradationOutcome = {
@@ -188,11 +192,14 @@ async function degradeSkills(
     };
   }
   if (result.status === "skipped") {
+    const reachProven = /already\s+(?:synced|present|installed|reachable)/i.test(result.message ?? "");
     return {
       ...base,
       source,
       status: "unchanged",
       message: result.message,
+      reachProven,
+      unresolved: !reachProven,
     };
   }
   return {
@@ -200,6 +207,7 @@ async function degradeSkills(
     source,
     status: dryRun ? "would-add" : "added",
     message: result.message,
+    reachProven: true,
   };
 }
 
@@ -286,18 +294,21 @@ async function degradeMcp(
   const bundled: Record<string, McpServer> = {};
   for (const item of resolution.servers) bundled[item.name] = item.server;
   const diff = diffServers(bundled, current.servers);
+  const unresolved = diff.overwrite.length > 0 || resolution.skipped.length > 0;
   const common = {
     ...base,
     source: local,
     added: diff.add,
     conflicts: diff.overwrite,
     skipped: resolution.skipped,
+    unresolved,
   };
 
   if (diff.add.length === 0) {
     return {
       ...common,
       status: "unchanged",
+      reachProven: !unresolved,
       message: diff.overwrite.length
         ? "conflicting MCP server(s) left untouched"
         : resolution.skipped.length
@@ -305,8 +316,7 @@ async function degradeMcp(
           : "bundled MCP already present",
     };
   }
-  if (dryRun) return { ...common, status: "would-add" };
-
+  if (dryRun) return { ...common, status: "would-add", reachProven: true };
   const next = { ...current.servers };
   for (const name of diff.add) next[name] = bundled[name]!;
 
@@ -316,12 +326,24 @@ async function degradeMcp(
       return { ...common, status: "failed", message: write.message };
     }
     if (write.status === "unchanged") {
-      return { ...common, status: "unchanged", message: write.message };
+      return {
+        ...common,
+        status: "unchanged",
+        message: write.message,
+        reachProven: false,
+        unresolved: true,
+      };
     }
     if (write.status === "skipped") {
-      return { ...common, status: "skipped", message: write.message };
+      return {
+        ...common,
+        status: "skipped",
+        message: write.message,
+        reachProven: false,
+        unresolved: true,
+      };
     }
-    return { ...common, status: "added", message: write.message };
+    return { ...common, status: "added", message: write.message, reachProven: true };
   } catch (err) {
     return {
       ...common,

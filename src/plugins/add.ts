@@ -2,18 +2,15 @@
 // of agents. It's a narrowed `mirror`: where `mirror` pushes every plugin from a
 // primary to every agent, this pushes the named plugins to just the agents you pick.
 //
-// Source of truth is Claude (the only agent exposing the marketplace → owner/repo map
-// needed to install elsewhere and to surface skills), matching `mirror`'s Claude-
-// primary constraint. For each chosen plugin, by target:
-//   • Codex (plugin cohort): native `installPlugin` (provision on) — reuses all of the
-//     adapter's resolve/provision/covered/skills-fallback logic.
-//   • Cursor (write-only): `npx plugins add <repo-or-local-artifact> --target cursor`.
-//   • Non-plugin agents: the plugin's bundled skills (`npx skills add`) AND its bundled
-//     MCP servers, lifted into each agent's own config (additive, conflict-safe).
-// Additive only — never removes. A plugin not installed on Claude is reported, not
-// guessed at.
+// A readable native plugin source supplies installed records and any validated local
+// or marketplace evidence attached to them. For each chosen plugin, by target:
+//   • Readable native targets install through their own adapter.
+//   • Cursor (write-only) receives a repository or exact local artifact.
+//   • Other agents receive the plugin's bundled reach and wrapper items additively.
+// Additive only — never removes. A plugin not installed on the selected source is
+// reported, not guessed at.
 
-import { claudeMarketplaceClonePaths, claudePluginAdapter } from "./claude.ts";
+import { claudeMarketplaceClonePaths } from "./claude.ts";
 import { pluginAdapters } from "./index.ts";
 import {
   artifactFromPluginRecord,
@@ -23,7 +20,7 @@ import {
 import { resolvePluginMcpServers } from "./mcp.ts";
 import type { McpCohortResult } from "./mirror.ts";
 import { run } from "./shell.ts";
-import type { PluginInstallResult, PluginRecord } from "./types.ts";
+import type { PluginAdapterRead, PluginInstallResult, PluginRecord } from "./types.ts";
 import { findAdapter } from "../adapters/index.ts";
 import { diffServers } from "../mcp-state.ts";
 import { addSkillSources, mcpCohort, skillCohort, type SkillAddResult } from "../skills.ts";
@@ -36,19 +33,18 @@ export type PluginAddCursor = { repos: string[]; results: { repo: string; status
 export type PluginAddReport = {
   plugins: string[];
   requestedAgents: AgentId[];
-  source: AgentId; // always claude-code
-  // Set when Claude's plugin list couldn't be read — nothing can be resolved.
+  source: AgentId;
+  // Set when the selected source's plugin list couldn't be read — nothing can be resolved.
   sourceError?: string;
   // Requested plugin names not installed on the source (can't be added elsewhere).
   notFound: string[];
-  // Native installs on the scoped plugin-cohort agents (Codex).
+  // Native installs on the scoped readable native targets.
   installs: PluginInstallResult[];
-  // Skills added (npx skills) — to scoped non-plugin agents, and the Codex skills
-  // fallback for bundles Codex can't load natively.
+  // Plugin reach added to scoped non-native agents, plus native-target fallbacks.
   skills: SkillAddResult[];
   // Cursor push (only when cursor is in scope).
   cursor?: PluginAddCursor;
-  // Plugin-bundled MCP servers lifted into scoped non-plugin agents.
+  // Plugin-bundled wrapper items lifted into scoped non-native agents.
   mcp: McpCohortResult[];
   applied: boolean;
 };
@@ -57,6 +53,9 @@ export type PluginAddRunOpts = {
   plugins: string[];
   agents: AgentId[]; // validated by the caller
   apply: boolean;
+  // Readable native source for the selected installed plugin records.
+  // Defaults to Claude for compatibility with the original add command.
+  from?: AgentId;
   // Register a missing marketplace on Codex before installing + fall unloadable
   // bundles back to skills. On by default (the point of an add is for it to land).
   provision?: boolean;
@@ -67,11 +66,12 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   const provision = opts.provision ?? true;
   const requested = [...new Set(opts.agents)];
   const wantNames = [...new Set(opts.plugins)];
+  const source = opts.from ?? "claude-code";
 
   const base: PluginAddReport = {
     plugins: wantNames,
     requestedAgents: requested,
-    source: "claude-code",
+    source,
     notFound: [],
     installs: [],
     skills: [],
@@ -79,8 +79,30 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
     applied: opts.apply,
   };
 
-  const read = await claudePluginAdapter.read();
-  if (read.error) return { ...base, sourceError: read.error };
+  const sourceAdapter = pluginAdapters.find((adapter) => adapter.id === source);
+  if (!sourceAdapter) {
+    return {
+      ...base,
+      sourceError:
+        `no readable plugin adapter for ${source}; readable sources: ` +
+        pluginAdapters.map((adapter) => adapter.id).join(", "),
+    };
+  }
+  let read: PluginAdapterRead;
+  try {
+    read = await sourceAdapter.read();
+  } catch (err) {
+    return {
+      ...base,
+      sourceError: `cannot read ${source} plugin state: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (read.error) {
+    return {
+      ...base,
+      sourceError: `cannot read ${source} plugin state: ${read.error}`,
+    };
+  }
 
   const byName = new Map(read.plugins.map((p) => [p.name, p]));
   const chosen: PluginRecord[] = [];
@@ -91,19 +113,24 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   }
   if (chosen.length === 0) return base;
 
-  const sources = (await claudePluginAdapter.marketplaceSources?.()) ?? null;
-  // Local clone dir per marketplace — the network-free install path. Source is always
-  // Claude here, so the clone map is Claude's known_marketplaces installLocation set.
-  const clonePaths = await claudeMarketplaceClonePaths();
+  // Marketplace source maps are supplied by the selected readable adapter. Claude's
+  // clone locations are special local evidence and must never be consulted for other
+  // source agents.
+  const sources = sourceAdapter.marketplaceSources
+    ? await sourceAdapter.marketplaceSources()
+    : undefined;
+  const clonePaths = source === "claude-code"
+    ? await claudeMarketplaceClonePaths()
+    : undefined;
   const planned = await Promise.all(chosen.map(async (plugin) => {
     const artifact = await artifactFromPluginRecord(plugin, {
-      agent: "claude-code",
-      sourceRepo: plugin.marketplace ? sources?.get(plugin.marketplace) : plugin.sourceRepo,
-      marketplaceRoot: plugin.marketplace ? clonePaths.get(plugin.marketplace) : undefined,
+      agent: source,
+      sourceRepo: plugin.sourceRepo ?? (plugin.marketplace ? sources?.get(plugin.marketplace) : undefined),
+      marketplaceRoot: plugin.marketplace ? clonePaths?.get(plugin.marketplace) : undefined,
     });
     const plan = await planArtifactLifecycle({
       artifact,
-      agent: "claude-code",
+      agent: source,
       mode: "verified",
       sourceRequired: true,
       provision,
@@ -120,10 +147,11 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
       .filter((source): source is string => !!source),
   )].sort();
 
-  const scopedSkillCohort = requested.filter((a) => skillCohort().includes(a));
-  const scopedMcpCohort = requested.filter((a) => mcpCohort().includes(a));
-  const wantCursor = requested.includes("cursor");
-  const nativeTargets = pluginAdapters.filter((a) => a.id !== "claude-code" && requested.includes(a.id));
+  const targetRequested = requested.filter((agent) => agent !== source);
+  const scopedSkillCohort = targetRequested.filter((a) => skillCohort().includes(a));
+  const scopedMcpCohort = targetRequested.filter((a) => mcpCohort().includes(a));
+  const wantCursor = targetRequested.includes("cursor");
+  const nativeTargets = pluginAdapters.filter((a) => a.id !== source && targetRequested.includes(a.id));
   // Per target, plugins that landed natively in this run/preview. Loose skills and
   // decomposed MCP are filtered at plugin/repo granularity so one successful native
   // plugin never gets duplicated merely because a sibling plugin failed.

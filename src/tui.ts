@@ -1,31 +1,14 @@
 import { MultiSelectPrompt } from "@clack/core";
-import { intro, outro, select, text, isCancel, cancel, log, note, spinner } from "@clack/prompts";
-import { findAdapter, listAgentIds } from "./adapters/index.ts";
-import {
-  runRemove,
-  runSelectiveMcpSync,
-  runSkillsOnly,
-  runSync,
-  type SelectiveMcpReport,
-} from "./sync.ts";
-import { runDoctor } from "./doctor.ts";
+import { intro, outro, select, isCancel, cancel, log, note, spinner } from "@clack/prompts";
 import { listPlugins, pluginAdapters } from "./plugins/index.ts";
-import { claudeMarketplaceClonePaths } from "./plugins/claude.ts";
-import { readLocalMarketplace } from "./plugins/marketplace.ts";
 import { buildPluginOverview } from "./plugins/overview.ts";
 import { runPluginUninstall, uninstallHasChanges } from "./plugins/uninstall.ts";
-import { runPluginAdd, pluginAddHasWork, type PluginAddReport } from "./plugins/add.ts";
-import {
-  addInstalledSkillsToAgents,
-  addSkillRepos,
-  addSkillsFromPlugins,
-  listInstalledSkills,
-  removeSkillNames,
-  skillCohort,
-} from "./skills.ts";
+import { skillCohort } from "./skills.ts";
+import { renderPluginSyncReport, pluginSyncHasChanges } from "./cli/plugin-outcomes.ts";
+import { neutralPluginText } from "./cli/render-plugins.ts";
+import { runSync, type SyncReport } from "./sync.ts";
 import {
   buildRows,
-  groupPluginsByMarketplace,
   isAllSelected,
   isGroupSelected,
   itemValues,
@@ -35,19 +18,24 @@ import {
 } from "./picker-logic.ts";
 import { S, c, breadcrumb } from "./tui-style.ts";
 import type { AgentId } from "./types.ts";
-import type { PluginRecord } from "./plugins/types.ts";
 
 const MAX_MENU_ITEMS = 12;
 
-type MainChoice = "plugins" | "skills" | "mcp" | "doctor" | "quit";
+export type MainChoice = "sync" | "list" | "remove" | "quit";
 type MenuOption<T extends string> = { value: T; label: string; hint?: string };
-type MenuResult = "back" | "done";
+
+export const MAIN_MENU: MenuOption<MainChoice>[] = [
+  { value: "sync", label: "Plugin Sync", hint: "reconcile every installed plugin" },
+  { value: "list", label: "Plugin List", hint: "readable state + Cursor verification note" },
+  { value: "remove", label: "Plugin Remove", hint: "guarded plugin uninstall" },
+  { value: "quit", label: "Quit" },
+];
 
 class FlowCancel extends Error {}
 
 // Orientation header for a multi-step flow: a breadcrumb title + a one-line "what this
-// does", rendered once at the top of each operation so the user always knows where they
-// are in the source → items → destinations → preview → confirm walk and what it produces.
+// does", rendered once at the top of each operation so the user knows what the operation
+// produces before the preview and confirmation.
 function flowHeader(path: string[], what: string) {
   note(what, breadcrumb(path));
 }
@@ -56,281 +44,87 @@ export async function showInteractivePicker(): Promise<void> {
   intro("syncthis");
 
   note(
-    "Pick what to manage. Each flow: source → items (space toggles, type to filter) → destinations → preview → confirm.",
+    "Discover installed plugins from every readable native source and reconcile them across supported targets. Sync previews before applying.",
     "what is this?",
   );
 
   try {
-    while (true) {
-      const choice = await pickOne<MainChoice>("What do you want to manage?", [
-        { value: "plugins", label: "Manage plugins", hint: "sync, list, remove" },
-        { value: "skills", label: "Manage skills", hint: "share, add, sync from plugins, remove" },
-        { value: "mcp", label: "Manage MCPs", hint: "sync or remove MCP servers" },
-        { value: "doctor", label: "Check problems", hint: "MCP coverage + conflicts" },
-        { value: "quit", label: "Quit" },
-      ]);
-      if (!choice || choice === "quit") {
-        cancel("aborted - nothing was changed.");
-        return;
-      }
-
-      let result: MenuResult = "done";
-      switch (choice) {
-        case "plugins":
-          result = await managePlugins();
-          break;
-        case "skills":
-          result = await manageSkills();
-          break;
-        case "mcp":
-          result = await manageMcps();
-          break;
-        case "doctor":
-          await doDoctor();
-          result = "done";
-          break;
-      }
-      if (result === "back") continue;
-      break;
+    const choice = await pickOne<MainChoice>("What plugin action do you want to take?", MAIN_MENU);
+    if (!choice || choice === "quit") {
+      cancel("aborted - nothing was changed.");
+      return;
     }
+
+    if (choice === "sync") await syncPlugins();
+    else if (choice === "list") await doPluginList();
+    else await removePlugins();
   } catch (err) {
     if (err instanceof FlowCancel) return;
     cancel(err instanceof Error ? err.message : String(err));
     return;
   }
 
-  outro("Done. Re-run `syncthis` anytime, or `syncthis help` for the full command list.");
-}
-
-async function managePlugins(): Promise<MenuResult> {
-  const op = await pickOne<"sync" | "list" | "remove" | "back">("Plugins: what do you want to do?", [
-    { value: "sync", label: "Sync plugins", hint: "choose source, plugins (grouped by marketplace), then destinations" },
-    { value: "list", label: "List installed plugins", hint: "read-only overview" },
-    { value: "remove", label: "Remove plugins", hint: "guarded uninstall + surfaced skill removal" },
-    { value: "back", label: "Back" },
-  ]);
-  if (!op || op === "back") return "back";
-  if (op === "sync") await syncPlugins();
-  else if (op === "list") await doPluginList();
-  else await removePlugins();
-  return "done";
-}
-
-async function manageSkills(): Promise<MenuResult> {
-  const op = await pickOne<"share" | "add" | "plugin-derived" | "update" | "remove" | "back">(
-    "Skills: what do you want to do?",
-    [
-      { value: "share", label: "Share installed skills", hint: "copy a source agent's skills to other agents" },
-      { value: "add", label: "Add from repo", hint: "npx skills add <repo>" },
-      { value: "plugin-derived", label: "Sync from plugins", hint: "surface Claude plugin skills to chosen agents" },
-      { value: "update", label: "Update installed skills", hint: "npx skills update -y" },
-      { value: "remove", label: "Remove skills", hint: "guarded npx skills remove" },
-      { value: "back", label: "Back" },
-    ],
-  );
-  if (!op || op === "back") return "back";
-  if (op === "share") await shareSkills();
-  else if (op === "add") await addSkillsFromRepo();
-  else if (op === "plugin-derived") await syncPluginDerivedSkills();
-  else if (op === "update") await doSkills();
-  else await removeSkills();
-  return "done";
-}
-
-async function manageMcps(): Promise<MenuResult> {
-  const op = await pickOne<"sync" | "everything" | "mcp-only" | "remove" | "doctor" | "back">("MCPs: what do you want to do?", [
-    { value: "everything", label: "Sync everything", hint: "MCP union + plugin-derived skills + skills update" },
-    { value: "sync", label: "Sync selected MCPs", hint: "add selected servers from one agent to others" },
-    { value: "mcp-only", label: "Sync all MCPs only", hint: "union sync across every MCP agent, skip skills" },
-    { value: "remove", label: "Remove MCPs", hint: "explicit scope + diff + confirm" },
-    { value: "doctor", label: "Check problems", hint: "coverage + conflicts" },
-    { value: "back", label: "Back" },
-  ]);
-  if (!op || op === "back") return "back";
-  if (op === "sync") await syncSelectedMcps();
-  else if (op === "everything") {
-    flowHeader(["MCPs", "Sync everything"], "MCP union sync across every agent, then surface plugin-derived skills and run a skills update.");
-    await doSync({ skipSkills: false });
-  } else if (op === "mcp-only") {
-    flowHeader(["MCPs", "Sync all MCPs only"], "Union sync MCP servers across every agent. Skips all skill steps.");
-    await doSync({ skipSkills: true });
-  } else if (op === "doctor") await doDoctor();
-  else await removeMcps();
-  return "done";
-}
-
-async function doSync(opts: { skipSkills?: boolean }) {
-  const s = spinner();
-  s.start(opts.skipSkills ? "Syncing MCP servers across agents..." : "Syncing MCP servers + skills across agents...");
-  const r = await runSync({
-    skipSkills: opts.skipSkills,
-    onPluginSkillProgress: (repo, i, total) => s.message(`adding plugin skills to other agents... ${i}/${total} (${repo})`),
-  });
-  s.stop("Sync complete.");
-
-  const names = new Set<string>();
-  for (const read of r.reads) for (const n of Object.keys(read.servers)) names.add(n);
-  log.success(`Shared ${names.size} MCP server(s) across ${r.reads.length} agents.`);
-  if (r.conflicts.length) log.warn(`${r.conflicts.length} conflict(s) left untouched - run "Check problems" for detail.`);
-  const failed = r.writes.filter((w) => w.status === "failed");
-  if (failed.length) log.error(`${failed.length} agent(s) couldn't be written.`);
-
-  if (r.pluginSkills?.ran) {
-    const added = r.pluginSkills.results.filter((x) => x.status === "added").length;
-    const skipped = r.pluginSkills.results.filter((x) => x.status === "skipped").length;
-    const psFailed = r.pluginSkills.results.filter((x) => x.status === "failed").length;
-    if (added || psFailed) {
-      const parts = [`${added} added`, skipped ? `${skipped} already synced` : "", psFailed ? `${psFailed} failed` : ""].filter(Boolean);
-      log.info(`Plugin skills -> ${r.pluginSkills.agents.length} non-plugin agents: ${parts.join(", ")}.`);
-    }
-  }
-
-  if (r.skills) {
-    if (!r.skills.ran) log.info(`Skills update: ${r.skills.message ?? "skipped"}.`);
-    else if (r.skills.ok) log.success("Skills refreshed (npx skills update).");
-    else log.error(`Skills update failed: ${r.skills.message ?? "unknown error"}.`);
-  }
-}
-
-async function doSkills() {
-  flowHeader(["Skills", "Update"], "Refresh every installed skill (npx skills update -y).");
-  const r = await runSkillsOnly();
-  if (r.ok) log.success("skills: npx skills update -y");
-  else log.error(`skills: ${r.message ?? "failed"}`);
-}
-
-async function doDoctor() {
-  flowHeader(["Check problems"], "MCP coverage and conflicts across every agent. Read-only.");
-  const r = await runDoctor();
-  const errors = r.reads.filter((rd) => rd.error).length;
-  const missing = r.reads.filter((rd) => !rd.exists && !rd.error).length;
-  const ok = r.reads.length - errors - missing;
-  log.success(`${ok} agent(s) readable, ${missing} missing, ${errors} error(s)`);
-  if (r.conflicts.length) log.warn(`${r.conflicts.length} conflict(s) - run \`syncthis doctor\` for detail`);
-  if (r.unmanaged.length) log.info(`${r.unmanaged.length} unmanaged MCP config(s) detected`);
+  outro("Done. Open `syncthis` anytime, or use `syncthis help` for the command list.");
 }
 
 async function doPluginList() {
-  flowHeader(["Plugins", "List"], "Read-only overview of plugins across every agent — native plugins plus plugin-derived skills on the non-plugin agents.");
+  flowHeader(["Plugins", "List"], "Read-only native plugin state. Cursor is write-only and unverified.");
   const o = await buildPluginOverview();
   for (const r of o.native) {
     if (r.error) log.error(`${r.agent}: ${r.error}`);
     else if (!r.exists) log.info(`${r.agent}: no config`);
     else log.success(`${r.agent}: ${r.plugins.length} plugin(s) - ${dedupe(r.plugins.map((p) => p.name)).join(", ") || "none"}`);
   }
-  log.info("cursor: write-only plugin target - not readable");
-  if (!o.skillsReadable) {
-    log.warn("plugin-derived skills: `npx skills list` unavailable");
-    return;
+  log.info("cursor: write-only plugin target - state unverified");
+}
+
+export type PluginSyncFlowDeps = {
+  runSync?: (options: { dryRun: boolean }) => Promise<SyncReport>;
+  confirm?: (message: string) => Promise<boolean>;
+  render?: (report: SyncReport) => readonly string[];
+  onLine?: (line: string) => void;
+};
+
+/**
+ * Shared preview/apply orchestration for the interactive Plugin Sync action.
+ * The injected runner is the same `runSync` contract used by the CLI, so the
+ * picker cannot accidentally fall back to the old source/target add flow.
+ */
+export async function runPluginSyncFlow(deps: PluginSyncFlowDeps = {}) {
+  const runner = deps.runSync ?? ((options: { dryRun: boolean }) => runSync(options));
+  const render = deps.render ?? renderPluginSyncReport;
+  const emit = deps.onLine ?? ((line: string) => log.info(line));
+
+  const preview = await runner({ dryRun: true });
+  for (const line of render(preview)) emit(line);
+  if (!preview.ok || !pluginSyncHasChanges(preview)) {
+    return { preview };
   }
-  if (o.derivedRepos.length === 0) {
-    log.info("plugin-derived skills: none surfaced yet (run the plugin sync flow)");
-    return;
-  }
-  const lines = o.derived.map((d) => `${d.agent}: ${d.skills.length}`).join("  ");
-  log.info(`plugin-derived skills (from ${o.derivedRepos.join(", ")}):\n${lines}`);
+
+  const confirmed = await (deps.confirm ?? confirmYes)(
+    "apply plugin sync across all supported targets?",
+  );
+  if (!confirmed) return { preview, cancelled: true as const };
+
+  const applied = await runner({ dryRun: false });
+  for (const line of render(applied)) emit(line);
+  return { preview, applied };
 }
 
 async function syncPlugins() {
   flowHeader(
     ["Plugins", "Sync"],
-    "Share installed plugins from a source agent to others. Plugin agents get the plugin itself; non-plugin agents get its bundled skills + MCP servers. Additive — never uninstalls.",
+    "Discover installed plugins from every readable native source and reconcile them across supported targets. Each target gets one canonical outcome.",
   );
-  // Claude is the only agent that can supply plugins to others (it exposes the
-  // marketplace → repo map AND keeps every marketplace cloned on disk for the
-  // network-free local-marketplace install). Present that honestly.
-  const source = await pickOne<AgentId>("plugin source agent", [
-    { value: "claude-code", label: "claude-code", hint: "the only agent that can supply plugins to others" },
-  ]);
-  if (!source) return;
-
-  const adapter = pluginAdapters.find((a) => a.id === source);
-  if (!adapter) throw new Error(`plugin source is not supported: ${source}`);
-  const read = await adapter.read();
-  if (read.error) {
-    log.error(`can't read ${source}: ${read.error}`);
-    return;
-  }
-  if (read.plugins.length === 0) {
-    log.info(`no plugins installed on ${source}.`);
-    return;
-  }
-
-  const scope = await pickOne<"installed" | "available">("which plugins to list?", [
-    { value: "installed", label: `installed on ${source}`, hint: `${read.plugins.length} plugin(s) — what can be transferred` },
-    { value: "available", label: "all available in marketplaces", hint: "browse the full set; uninstalled ones can't transfer" },
-  ]);
-  if (!scope) return;
-
-  const items =
-    scope === "available"
-      ? await allAvailablePluginItems(read.plugins)
-      : groupPluginsByMarketplace(read.plugins.map((p) => ({ name: p.name, marketplace: p.marketplace, installed: true })));
-
-  const plugins = await pickPlugins("choose plugin(s) to sync", items);
-  if (!plugins) return;
-
-  const targets = pluginTargetAgents(source);
-  const agents = await pickAgents(targets, "choose destination agent(s)");
-  if (!agents) return;
-
-  const preview = await runPluginAdd({ plugins, agents, apply: false });
-  if (preview.sourceError) {
-    log.error(`can't read claude-code (the source): ${preview.sourceError}`);
-    return;
-  }
-  if (preview.notFound.length) log.warn(`not installed on ${source} (can't transfer): ${preview.notFound.join(", ")}`);
-  printPluginAddPreview(preview);
-  if (!pluginAddHasWork(preview)) {
-    log.success("nothing to do.");
-    return;
-  }
-
-  if (!(await confirmYes(`apply plugin sync from ${source}? plugin agents get plugins; non-plugin agents get derived skills/MCPs.`))) return;
-  const s = spinner();
-  s.start("Syncing plugins...");
-  const applied = await runPluginAdd({
-    plugins,
-    agents,
-    apply: true,
-    onProgress: (label, i, total) => s.message(`${label}  (${i}/${total})`),
-  }).catch((err) => {
-    s.stop("Plugin sync failed.");
-    throw err;
-  });
-  s.stop("Plugin sync applied.");
-  printPluginAddApplied(applied);
-}
-
-// Every plugin available across Claude's cloned marketplaces, installed or not.
-// Installed ones come first (no hint); the rest are flagged "not installed" — they
-// show for browsing but a sync tool can't transfer them (runPluginAdd reports them
-// as notFound). Grouped by marketplace for the picker.
-async function allAvailablePluginItems(installed: PluginRecord[]): Promise<PickerItem[]> {
-  const installedKeys = new Set(installed.map((p) => `${p.name} ${p.marketplace ?? ""}`));
-  const records: { name: string; marketplace?: string; installed?: boolean }[] = installed.map((p) => ({
-    name: p.name,
-    marketplace: p.marketplace,
-    installed: true,
-  }));
-  const clones = await claudeMarketplaceClonePaths();
-  for (const [marketplace, clonePath] of clones) {
-    const mp = await readLocalMarketplace(clonePath);
-    if (!mp) continue;
-    for (const name of mp.pluginNames) {
-      if (installedKeys.has(`${name} ${marketplace}`)) continue;
-      records.push({ name, marketplace, installed: false });
-    }
-  }
-  return groupPluginsByMarketplace(records);
+  await runPluginSyncFlow();
 }
 
 async function removePlugins() {
-  flowHeader(["Plugins", "Remove"], "Guarded uninstall: removes the native plugin and its exact surfaced skills/MCP servers. You'll preview the exact changes and confirm before anything is removed.");
+  flowHeader(["Plugins", "Remove"], "Guarded uninstall: removes selected plugins from the chosen agents. You'll preview the exact changes and confirm before anything is removed.");
   const reads = await listPlugins();
   const names = dedupe(reads.flatMap((r) => (r.error ? [] : r.plugins.map((p) => p.name)))).sort();
   if (names.length === 0) {
-    log.info("no plugins installed on claude-code or codex to uninstall.");
+    log.info("no readable plugins found to uninstall.");
     return;
   }
 
@@ -349,27 +143,27 @@ async function removePlugins() {
   const nativeHits = preview.native.filter((t) => t.present).map((t) => `${t.agent}:${t.plugin}`);
   if (nativeHits.length) log.info(`native plugin uninstall: ${nativeHits.join(", ")}`);
   if (preview.skills.names.length && preview.skills.agents.length) {
-    log.info(`remove ${preview.skills.names.length} surfaced skill(s) from ${preview.skills.agents.length} agent(s): ${preview.skills.names.join(", ")}`);
+    log.info(`remove ${preview.skills.names.length} bundled plugin adaptation item(s) from ${preview.skills.agents.length} agent(s): ${preview.skills.names.join(", ")}`);
   }
-  if (preview.skills.kept.length) log.info(`keeping (still provided by another plugin): ${preview.skills.kept.join(", ")}`);
+  if (preview.skills.kept.length) log.info(`keeping adaptation still provided by another plugin: ${preview.skills.kept.join(", ")}`);
   for (const target of preview.mcp) {
     if (target.unreadable) {
-      log.warn(`${target.agent}: MCP target unreadable (${target.unreadable})`);
+      log.warn(`${target.agent}: plugin adaptation target unreadable (${neutralPluginText(target.unreadable)})`);
     } else if (target.names.length) {
-      log.info(`remove ${target.names.length} surfaced MCP server(s) from ${target.agent}: ${target.names.join(", ")}`);
+      log.info(`remove ${target.names.length} surfaced plugin adaptation item(s) from ${target.agent}: ${target.names.join(", ")}`);
     }
     if (target.kept.length) {
-      log.info(`${target.agent}: keeping MCP still provided by another plugin: ${target.kept.join(", ")}`);
+      log.info(`${target.agent}: keeping adaptation items still provided by another plugin: ${target.kept.join(", ")}`);
     }
     if (target.conflicts.length) {
-      log.warn(`${target.agent}: modified MCP left untouched: ${target.conflicts.join(", ")}`);
+      log.warn(`${target.agent}: modified adaptation items left untouched: ${target.conflicts.join(", ")}`);
     }
   }
   if (preview.claudeReadError && preview.skillScope.length) {
-    log.warn(`couldn't read Claude's plugins (${preview.claudeReadError}) - surfaced skills on ${preview.skillScope.join(", ")} can't be resolved and will be left in place`);
+    log.warn(`couldn't read Claude's plugins (${neutralPluginText(preview.claudeReadError)}) - plugin adaptation on ${preview.skillScope.join(", ")} can't be resolved and will be left in place`);
   }
 
-  if (!(await confirmYes("apply? this uninstalls plugins and removes their exact surfaced skills/MCP servers."))) return;
+  if (!(await confirmYes("apply? this uninstalls the selected plugins and their adaptations."))) return;
 
   const s = spinner();
   s.start("Removing plugins...");
@@ -397,316 +191,21 @@ async function removePlugins() {
   for (const result of applied.mcpResults ?? []) {
     if (result.status === "synced") {
       removed += result.removed.length;
-      log.info(`${result.agent}: removed ${result.removed.length} MCP server(s): ${result.removed.join(", ")}`);
+      log.info(`${result.agent}: removed ${result.removed.length} plugin adaptation item(s): ${result.removed.join(", ")}`);
     } else if (result.status === "failed") {
       failed += 1;
-      log.error(`${result.agent}: MCP removal failed (${result.message ?? "unknown error"})`);
+      log.error(`${result.agent}: plugin adaptation removal blocked (${neutralPluginText(result.message, "unknown error")})`);
     }
     if (result.conflicts.length) {
-      log.warn(`${result.agent}: modified MCP left untouched: ${result.conflicts.join(", ")}`);
+      log.warn(`${result.agent}: modified adaptation items left untouched: ${result.conflicts.join(", ")}`);
     }
   }
   if (applied.claudeReadError && applied.skillScope.length) {
     const who = applied.requiredSkillAgents.length ? applied.requiredSkillAgents : applied.skillScope;
-    log.warn(`claude unreadable (${applied.claudeReadError}) - surfaced skills on ${who.join(", ")} couldn't be resolved${applied.requiredSkillAgents.length ? " and were NOT removed" : " (native uninstall still applied)"}`);
+    log.warn(`claude unreadable (${neutralPluginText(applied.claudeReadError)}) - plugin adaptation on ${who.join(", ")} couldn't be resolved${applied.requiredSkillAgents.length ? " and was NOT removed" : " (native uninstall still applied)"}`);
   }
-  if (failed > 0) log.error(`${removed} removed, ${failed} failed - run \`syncthis plugin rm\` for detail`);
+  if (failed > 0) log.error(`${removed} removed, ${failed} blocked - use \`syncthis plugins rm\` for detail`);
   else log.success(`remove complete: ${removed} removed.`);
-}
-
-// Share already-installed skills from a chosen source agent onto other agents. The
-// skills store is shared (~/.agents/skills), so this just adds the destination agents'
-// symlinks via `npx skills add <storePath> -a <dest>` — but the source-agent framing
-// matches the plugin/MCP flow ("bring this agent's skills to those agents").
-async function shareSkills() {
-  flowHeader(["Skills", "Share"], "Copy a source agent's installed skills onto other agents.");
-  const installed = await listInstalledSkills();
-  if (!installed || installed.length === 0) {
-    log.info("no installed skills found (or `npx skills list` unavailable).");
-    return;
-  }
-  const sourceAgents = dedupe(installed.flatMap((s) => s.agents)).sort();
-  if (sourceAgents.length === 0) {
-    log.info("no skills are registered on any agent syncthis knows.");
-    return;
-  }
-
-  const source = await pickOne<AgentId>(
-    "skills: source agent (whose skills to share)",
-    sourceAgents.map((a) => ({ value: a, label: a })),
-  );
-  if (!source) return;
-
-  const onSource = installed.filter((s) => s.agents.includes(source));
-  if (onSource.length === 0) {
-    log.info(`no skills on ${source}.`);
-    return;
-  }
-
-  const names = await pickMany(
-    "choose skill(s) to share",
-    onSource.map((s) => ({ value: s.name, label: s.name })),
-  );
-  if (!names) return;
-
-  const dests = await pickAgents(skillTargetAgents().filter((a) => a !== source), "share to which agent(s)?");
-  if (!dests) return;
-
-  const pathByName = new Map(installed.map((s) => [s.name, s.path]));
-  const refs = names.map((n) => ({ name: n, path: pathByName.get(n) ?? "" }));
-  log.info(`will add ${refs.length} skill(s) to ${dests.join(", ")}`);
-  if (!(await confirmYes("apply skill share?"))) return;
-
-  const s = spinner();
-  s.start("Sharing skills...");
-  const results = await addInstalledSkillsToAgents(refs, dests).catch((err) => {
-    s.stop("Share failed.");
-    throw err;
-  });
-  s.stop("Done.");
-  const added = results.filter((r) => r.status === "added").length;
-  const failed = results.filter((r) => r.status === "failed");
-  for (const f of failed) log.error(`${f.repo}: ${f.message ?? "failed"}`);
-  if (failed.length) log.error(`${added} added, ${failed.length} failed`);
-  else log.success(`shared ${added} skill(s) to ${dests.length} agent(s).`);
-}
-
-async function addSkillsFromRepo() {
-  flowHeader(["Skills", "Add from repo"], "Add skill repo(s) by owner/repo slug to chosen agents (via npx skills add).");
-  const repoRaw = await text({
-    message: "skill repo(s) to add (comma-separated)",
-    placeholder: "owner/repo, owner/other",
-  });
-  if (isCancel(repoRaw)) stopFlow();
-  const repos = dedupe(String(repoRaw).split(",").map((s) => s.trim()).filter(Boolean)).sort();
-  if (repos.length === 0) stopFlow("no repos given.");
-
-  const agents = await pickAgents(skillTargetAgents(), "add these skills to which agents?");
-  if (!agents) return;
-
-  log.info(`will run ${repos.length} repo add(s): ${formatSkillAddTargets(agents)}`);
-  if (!(await confirmYes("apply skill add?"))) return;
-
-  const s = spinner();
-  s.start("Adding skills...");
-  const results = await addSkillRepos(repos, agents).catch((err) => {
-    s.stop("Add failed.");
-    throw err;
-  });
-  s.stop("Done.");
-  const failed = results.filter((r) => r.status === "failed");
-  const added = results.filter((r) => r.status === "added").length;
-  const skipped = results.filter((r) => r.status === "skipped").length;
-  for (const f of failed) log.error(`${f.repo}: ${f.message ?? "failed"}`);
-  if (failed.length) log.error(`${added} added, ${skipped} skipped, ${failed.length} failed`);
-  else log.success(`skills add complete: ${added} added${skipped ? `, ${skipped} skipped` : ""}.`);
-}
-
-async function syncPluginDerivedSkills() {
-  flowHeader(["Skills", "Sync from plugins"], "Surface the skills bundled inside your Claude plugins to the non-plugin agents that can't read plugins directly.");
-  const source = await pickOne<AgentId>("plugin skill source agent", [
-    { value: "claude-code", label: "claude-code", hint: "installed Claude plugins" },
-  ]);
-  if (!source) return;
-
-  const agents = await pickAgents(skillCohort(), "sync plugin-derived skills to which agents?", skillCohort());
-  if (!agents) return;
-
-  const preview = await addSkillsFromPlugins({ dryRun: true, agents, force: true });
-  if (!preview.ran) {
-    log.info(preview.message ?? "no plugin-derived skills found.");
-    return;
-  }
-  const wouldAdd = preview.results.filter((r) => r.status === "added").length;
-  const skipped = preview.results.filter((r) => r.status === "skipped").length;
-  log.info(`plugin-derived skills: ${preview.sources.length} source repo(s), ${wouldAdd} would add, ${skipped} already synced.`);
-  if (!(await confirmYes(`sync plugin-derived skills from ${source} to ${agents.length} agent(s)?`))) return;
-
-  const s = spinner();
-  s.start("Syncing plugin-derived skills...");
-  const applied = await addSkillsFromPlugins({
-    agents,
-    force: true,
-    onProgress: (repo, i, total) => s.message(`${repo}  (${i}/${total})`),
-  }).catch((err) => {
-    s.stop("Skill sync failed.");
-    throw err;
-  });
-  s.stop("Done.");
-  const added = applied.results.filter((r) => r.status === "added").length;
-  const failed = applied.results.filter((r) => r.status === "failed").length;
-  const already = applied.results.filter((r) => r.status === "skipped").length;
-  if (failed) log.error(`${added} added, ${already} skipped, ${failed} failed`);
-  else log.success(`plugin-derived skills synced: ${added} added, ${already} skipped.`);
-}
-
-async function removeSkills() {
-  flowHeader(["Skills", "Remove"], "Remove named skills from chosen agents. You'll confirm before anything is removed.");
-  const installed = await listInstalledSkills();
-  if (!installed || installed.length === 0) {
-    log.info("no installed skills found (or `npx skills list` unavailable).");
-    return;
-  }
-  const skills = await pickMany(
-    "choose skill(s) to remove",
-    installed.map((s) => ({ value: s.name, label: s.name, hint: s.agents.join(", ") })),
-  );
-  if (!skills) return;
-
-  const agents = await pickAgents(skillTargetAgents(), "remove from which agents?");
-  if (!agents) return;
-  if (!(await confirmYes(`remove ${skills.length} skill(s) from ${agents.length} agent(s)?`))) return;
-
-  const s = spinner();
-  s.start("Removing skills...");
-  const r = await removeSkillNames(skills, agents).catch((err) => {
-    s.stop("Remove failed.");
-    throw err;
-  });
-  s.stop("Done.");
-  if (r.status === "failed") log.error(r.message ?? "failed");
-  else log.success(`removed ${r.skills.length} skill(s) from ${r.agents.length} agent(s)`);
-}
-
-async function syncSelectedMcps() {
-  flowHeader(["MCPs", "Sync selected"], "Additively share chosen MCP servers from one agent to others. A name that already exists with a different config is left untouched and reported — never overwritten.");
-  const source = await pickOne<AgentId>("MCP source agent", listAgentIds().map((id) => ({ value: id, label: id })));
-  if (!source) return;
-
-  const adapter = findAdapter(source);
-  if (!adapter) throw new Error(`unknown MCP source agent: ${source}`);
-  const read = await adapter.read();
-  if (read.error) {
-    log.error(`can't read ${source}: ${read.error}`);
-    return;
-  }
-  const names = Object.keys(read.servers).sort();
-  if (names.length === 0) {
-    log.info(`${source} has no MCP servers configured.`);
-    return;
-  }
-
-  const servers = await pickMany("choose MCP server(s) to sync", names.map((n) => ({ value: n, label: n })));
-  if (!servers) return;
-
-  const destinations = await pickAgents(listAgentIds().filter((id) => id !== source), "choose destination agent(s)");
-  if (!destinations) return;
-
-  const preview = await runSelectiveMcpSync({ from: source, to: destinations, names: servers, apply: false });
-  printMcpSyncPreview(preview);
-  if (!hasMcpSyncChanges(preview)) {
-    log.success("nothing to do - selected MCPs are already present or only conflict.");
-    return;
-  }
-  if (!(await confirmYes("apply MCP sync? existing conflicting servers stay untouched."))) return;
-
-  const s = spinner();
-  s.start("Syncing selected MCPs...");
-  const applied = await runSelectiveMcpSync({ from: source, to: destinations, names: servers, apply: true }).catch((err) => {
-    s.stop("MCP sync failed.");
-    throw err;
-  });
-  s.stop("Done.");
-  printMcpSyncApplied(applied);
-}
-
-async function removeMcps() {
-  flowHeader(["MCPs", "Remove"], "Remove MCP server(s) from chosen agents. You'll preview the exact writes and confirm first.");
-  const doc = await runDoctor();
-  const names = doc.coverage.map((c) => c.name).sort();
-  if (names.length === 0) {
-    log.info("no MCP servers configured in any agent.");
-    return;
-  }
-  const servers = await pickMany("choose MCP server(s) to remove", names.map((n) => ({ value: n, label: n })));
-  if (!servers) return;
-
-  const agents = await pickAgents(listAgentIds(), "remove from which agents?");
-  if (!agents) return;
-
-  let willChange = false;
-  for (const name of servers) {
-    const preview = await runRemove({ name, agents, apply: false });
-    const hits = preview.writes.filter((w) => w.status === "synced").map((w) => w.agent);
-    if (hits.length) {
-      willChange = true;
-      log.info(`- ${name}: remove from ${hits.join(", ")}`);
-    } else {
-      log.info(`- ${name}: not present on the chosen agents`);
-    }
-  }
-  if (!willChange) {
-    log.success("nothing to do - none of those servers are on the chosen agents.");
-    return;
-  }
-  if (!(await confirmYes(`remove ${servers.length} server(s) from ${agents.length} agent(s)?`))) return;
-
-  const s = spinner();
-  s.start("Removing MCPs...");
-  let changed = 0;
-  let failed = 0;
-  try {
-    for (const name of servers) {
-      const r = await runRemove({ name, agents, apply: true });
-      for (const w of r.writes) {
-        if (w.status === "failed") failed += 1;
-        else if (w.status === "synced") changed += 1;
-      }
-    }
-  } catch (err) {
-    s.stop("Remove failed.");
-    throw err;
-  }
-  s.stop("Done.");
-  if (failed) log.error(`${changed} write(s), ${failed} failed`);
-  else log.success(`removed (${changed} write(s)) across ${agents.length} agent(s)`);
-}
-
-function printPluginAddPreview(report: PluginAddReport) {
-  if (report.installs.length) log.info(`native plugin installs: ${report.installs.length}`);
-  if (report.cursor?.repos.length) log.info(`cursor: ${report.cursor.repos.length} repo push(es) via npx plugins`);
-  if (report.skills.length) log.info(`skills fallback: ${report.skills.length} repo add(s) via npx skills`);
-  const mcpAdds = report.mcp.reduce((sum, r) => sum + r.added.length, 0);
-  const mcpConflicts = report.mcp.reduce((sum, r) => sum + r.conflicts.length, 0);
-  if (mcpAdds || mcpConflicts) log.info(`plugin MCP lift: ${mcpAdds} add(s), ${mcpConflicts} conflict(s) left untouched`);
-}
-
-function printPluginAddApplied(report: PluginAddReport) {
-  let ok = 0;
-  let failed = 0;
-  for (const ins of report.installs) ins.status === "failed" ? (failed += 1) : (ok += 1);
-  for (const sk of report.skills) sk.status === "failed" ? (failed += 1) : (ok += 1);
-  for (const c of report.cursor?.results ?? []) c.status === "failed" ? (failed += 1) : (ok += 1);
-  for (const m of report.mcp) {
-    if (m.status === "failed") failed += 1;
-    else if (m.added.length) ok += 1;
-  }
-  if (failed) log.error(`${ok} action(s) ok, ${failed} failed - run \`syncthis add plugin\` for detail`);
-  else log.success(`plugin sync complete: ${ok} action(s).`);
-}
-
-function printMcpSyncPreview(report: SelectiveMcpReport) {
-  if (report.notFound.length) log.warn(`not found on ${report.from}: ${report.notFound.join(", ")}`);
-  for (const t of report.targets) {
-    if (t.toRead.error) {
-      log.error(`${t.to}: ${t.toRead.error}`);
-      continue;
-    }
-    if (t.add.length) log.info(`${t.to}: +${t.add.join(", ")}`);
-    if (t.conflicts.length) log.warn(`${t.to}: conflict(s) left untouched: ${t.conflicts.join(", ")}`);
-  }
-}
-
-function printMcpSyncApplied(report: SelectiveMcpReport) {
-  const added = report.targets.reduce((sum, t) => sum + t.add.length, 0);
-  const failed = report.targets.filter((t) => t.write?.status === "failed").length;
-  const conflicts = report.targets.reduce((sum, t) => sum + t.conflicts.length, 0);
-  if (failed) log.error(`${added} MCP add(s), ${conflicts} conflict(s), ${failed} failed write(s)`);
-  else log.success(`MCP sync complete: ${added} add(s), ${conflicts} conflict(s) left untouched.`);
-}
-
-function hasMcpSyncChanges(report: SelectiveMcpReport): boolean {
-  return report.targets.some((t) => t.add.length > 0);
 }
 
 async function pickOne<T extends string>(
@@ -756,29 +255,6 @@ async function pickMany<T extends string>(
       stopFlow();
     }
     const picked = raw as T[];
-    if (picked.length > 0) return picked;
-    log.warn("Select at least one item, or cancel with Ctrl-C.");
-  }
-}
-
-// Grouped multiselect for plugins: a "select all" row plus a per-marketplace toggle
-// row before each group's plugins. Space toggles whichever row the cursor is on.
-async function pickPlugins(message: string, items: PickerItem[]): Promise<string[] | null> {
-  if (items.length === 0) {
-    log.info("nothing to choose.");
-    return null;
-  }
-  const rows = buildRows(items, { grouped: true });
-  while (true) {
-    const raw = await controlMultiselect({
-      message,
-      rows,
-      maxItems: MAX_MENU_ITEMS,
-    });
-    if (isCancel(raw)) {
-      stopFlow();
-    }
-    const picked = raw as string[];
     if (picked.length > 0) return picked;
     log.warn("Select at least one item, or cancel with Ctrl-C.");
   }
@@ -997,18 +473,6 @@ async function confirmYes(message: string): Promise<boolean> {
 function stopFlow(message = "aborted."): never {
   cancel(message);
   throw new FlowCancel(message);
-}
-
-function pluginTargetAgents(source: AgentId): AgentId[] {
-  return dedupe<AgentId>([...pluginAdapters.map((a) => a.id), "cursor", ...skillCohort()]).filter((a) => a !== source);
-}
-
-function skillTargetAgents(): AgentId[] {
-  return dedupe<AgentId>([...listAgentIds(), "pi"]);
-}
-
-function formatSkillAddTargets(agents: AgentId[]): string {
-  return agents.map((a) => `-a ${a}`).join(" ");
 }
 
 function dedupe<T extends string>(items: T[]): T[] {

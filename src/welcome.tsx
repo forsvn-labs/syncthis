@@ -40,17 +40,16 @@ interface CommandRow {
 // Descriptions are kept short on purpose: the row is `$ ` + a fixed-width command
 // column + the description, all in one Ink flex row, so a long description wraps
 // (and garbles) on an 80-col terminal. Keep each desc within ~43 chars.
+export const TAGLINE = "Install a plugin once. Use it everywhere.";
+
 export const COMMANDS: CommandRow[] = [
-  { cmd: "syncthis sync", desc: "share MCP + skills with every agent" },
-  { cmd: "syncthis plugins add <name> --all", desc: "push plugin content to agents" },
-  { cmd: "syncthis mcp sync", desc: "MCP servers only (skip skills)" },
-  { cmd: "syncthis skills update", desc: "refresh skills (npx skills update)" },
+  { cmd: "syncthis sync", desc: "reconcile installed plugins everywhere" },
+  { cmd: "syncthis plugins list", desc: "show readable plugin state" },
+  { cmd: "syncthis plugins rm <name…> --all", desc: "guarded plugin removal" },
+  { cmd: "syncthis doctor", desc: "read-only plugin overview" },
   { cmd: "syncthis update", desc: "update syncthis to latest" },
-  { cmd: "syncthis mcp <from> <to>", desc: "one-way MCP copy between two agents" },
-  { cmd: "syncthis mcp rm <server> --all", desc: "remove one MCP server everywhere" },
-  { cmd: "syncthis plugins list", desc: "list installed plugins per agent" },
-  { cmd: "syncthis doctor", desc: "coverage + conflict report" },
-  { cmd: "syncthis help", desc: "full command list + flags" },
+  { cmd: "syncthis version", desc: "print the installed version" },
+  { cmd: "syncthis help", desc: "plugin commands and outcomes" },
 ];
 
 function Welcome() {
@@ -62,7 +61,7 @@ function Welcome() {
       </Gradient>
 
       <Box marginBottom={1} marginLeft={2}>
-        <Text dimColor>Keep your AI coding agents in sync — MCP servers, skills &amp; plugins.</Text>
+        <Text dimColor>{TAGLINE}</Text>
       </Box>
 
       {COMMANDS.map((c) => (
@@ -78,7 +77,7 @@ function Welcome() {
       <Box marginTop={1} marginLeft={2}>
         <Text>try: </Text>
         <Text color="green">syncthis sync</Text>
-        <Text dimColor>  — propagate every server, everywhere</Text>
+        <Text dimColor>  — install once, use everywhere</Text>
       </Box>
 
       <Box marginTop={1} marginLeft={2}>

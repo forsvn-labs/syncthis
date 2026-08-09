@@ -1,13 +1,10 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
-  open,
   readFile,
-  readlink,
   readdir,
   realpath,
   rename,
@@ -20,6 +17,12 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { expandHome } from "../io.ts";
 import { codexPluginIdentityCandidates } from "./shell.ts";
 import { inspectPluginSource } from "./source.ts";
+import {
+  readSecureFile,
+  walkSecureTree,
+  type SecureTreeFileInfo,
+  type SecureTreeVisitor,
+} from "./secure-tree.ts";
 
 const MANAGED_VERSION = 3;
 const PUBLICATION_LOCK_WAIT_MS = 5_000;
@@ -145,12 +148,9 @@ async function fingerprintTree(
   return hash.digest("hex");
 }
 
-type TreeVisitor = {
-  directory(rel: string, mode: number): Promise<void>;
-  file(rel: string, content: Buffer, mode: number): Promise<void>;
-};
+type FileInfo = SecureTreeFileInfo;
 
-type FileInfo = Awaited<ReturnType<typeof lstat>>;
+type TreeVisitor = SecureTreeVisitor;
 
 function sameEntry(first: FileInfo, second: FileInfo): boolean {
   return (
@@ -165,35 +165,6 @@ function sameEntry(first: FileInfo, second: FileInfo): boolean {
 
 function raceError(context: string, path: string): Error {
   return new Error(`${context} changed while it was being read: ${path}`);
-}
-
-async function assertStableSymlink(
-  path: string,
-  context: string,
-  expected: FileInfo,
-  expectedText: string,
-  expectedTarget: string,
-): Promise<void> {
-  let current: FileInfo;
-  let currentText: string;
-  let currentTarget: string;
-  try {
-    [current, currentText, currentTarget] = await Promise.all([
-      lstat(path),
-      readlink(path),
-      realpath(path),
-    ]);
-  } catch {
-    throw raceError(context, path);
-  }
-  if (
-    !current.isSymbolicLink() ||
-    !sameEntry(expected, current) ||
-    currentText !== expectedText ||
-    currentTarget !== expectedTarget
-  ) {
-    throw raceError(context, path);
-  }
 }
 
 async function assertStableSourceRoot(
@@ -240,46 +211,6 @@ async function withStableSourceRoot<T>(
   }
 }
 
-async function readStableFile(
-  path: string,
-  root: string,
-  context: string,
-  expected: FileInfo,
-): Promise<{ content: Buffer; mode: number }> {
-  let canonical: string;
-  try {
-    canonical = await realpath(path);
-  } catch (err) {
-    throw new Error(`cannot resolve ${context} file ${path}: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (!isWithin(root, canonical)) throw new Error(`${context} file resolves outside source root: ${path}`);
-
-  const handle = await open(canonical, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const openedBefore = await handle.stat();
-    const namedBefore = await lstat(canonical);
-    if (!openedBefore.isFile() || !namedBefore.isFile() || !sameEntry(expected, namedBefore)) {
-      throw raceError(context, path);
-    }
-    const content = await handle.readFile();
-    const [openedAfter, namedAfter, canonicalAfter] = await Promise.all([
-      handle.stat(),
-      lstat(canonical),
-      realpath(path),
-    ]);
-    if (
-      !sameEntry(openedBefore, openedAfter) ||
-      !sameEntry(namedBefore, namedAfter) ||
-      canonicalAfter !== canonical
-    ) {
-      throw raceError(context, path);
-    }
-    return { content, mode: openedBefore.mode };
-  } finally {
-    await handle.close();
-  }
-}
-
 async function walkTree(
   root: string,
   context: string,
@@ -287,103 +218,19 @@ async function walkTree(
   ignoredPaths: ReadonlySet<string>,
   visitor: TreeVisitor,
 ): Promise<void> {
-  const sourceRoot = await realpath(root);
-  const activeDirectories = new Set<string>();
-
-  async function walk(current: string, rel: string): Promise<void> {
-    if (rel && ignoredPaths.has(rel)) return;
-
-    let before: FileInfo;
-    try {
-      before = await lstat(current);
-    } catch (err) {
-      throw new Error(`cannot read ${context} entry ${current}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    if (before.isSymbolicLink()) {
-      if (!rel) throw new Error(`${context} root is a symlink: ${current}`);
-      if (!allowContainedSymlinks) throw new Error(`${context} contains a symlink: ${current}`);
-      let targetText: string;
-      try {
-        targetText = await readlink(current);
-      } catch (err) {
-        throw new Error(`cannot read ${context} symlink ${current}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      let target: string;
-      try {
-        target = await realpath(current);
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === "ENOENT") throw new Error(`${context} contains a dangling symlink: ${current}`);
-        if (code === "ELOOP") throw new Error(`${context} contains a cyclic symlink: ${current}`);
-        throw new Error(`cannot resolve ${context} symlink ${current}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      // The outside-target error is the one traversal outcome that authorizes
-      // last-resort degradation. Prove the link was stable before assigning that
-      // meaning; a changed link is a hard source-race failure.
-      await assertStableSymlink(current, context, before, targetText, target);
-      if (!isWithin(sourceRoot, target)) {
-        throw new ManagedMarketplaceUnsupportedFormatError(
-          `${context} symlink resolves outside source root: ${current}`,
-        );
-      }
-
-      await walk(target, rel);
-      await assertStableSymlink(current, context, before, targetText, target);
-      return;
-    }
-
-    if (before.isDirectory()) {
-      const canonical = await realpath(current);
-      if (!isWithin(sourceRoot, canonical)) {
-        throw new Error(`${context} directory resolves outside source root: ${current}`);
-      }
-      if (activeDirectories.has(canonical)) {
-        throw new Error(`${context} contains a cyclic directory reference: ${current}`);
-      }
-      activeDirectories.add(canonical);
-      try {
-        let entries: string[];
-        try {
-          entries = (await readdir(current)).sort((a, b) => a.localeCompare(b));
-        } catch (err) {
-          throw new Error(`cannot read ${context} directory ${current}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        await visitor.directory(rel, before.mode);
-        for (const name of entries) {
-          const childRel = rel ? `${rel}/${name}` : name;
-          await walk(join(current, name), childRel);
-        }
-        const [after, afterEntries, canonicalAfter] = await Promise.all([
-          lstat(current),
-          readdir(current).then((items) => items.sort((a, b) => a.localeCompare(b))),
-          realpath(current),
-        ]);
-        if (
-          !after.isDirectory() ||
-          !sameEntry(before, after) ||
-          canonicalAfter !== canonical ||
-          entries.length !== afterEntries.length ||
-          entries.some((name, index) => name !== afterEntries[index])
-        ) {
-          throw raceError(context, current);
-        }
-      } finally {
-        activeDirectories.delete(canonical);
-      }
-      return;
-    }
-
-    if (before.isFile()) {
-      const stable = await readStableFile(current, sourceRoot, context, before);
-      await visitor.file(rel, stable.content, stable.mode);
-      return;
-    }
-
-    throw new Error(`${context} contains an unsupported filesystem entry: ${current}`);
-  }
-
-  await walk(sourceRoot, "");
+  await walkSecureTree(
+    root,
+    context,
+    {
+      allowContainedSymlinks,
+      ignoredPaths,
+      onOutsideSymlink: (path, name) =>
+        new ManagedMarketplaceUnsupportedFormatError(
+          `${name} symlink resolves outside source root: ${path}`,
+        ),
+    },
+    visitor,
+  );
 }
 
 async function copyTreeDereferenced(source: string, destination: string): Promise<void> {
@@ -420,7 +267,7 @@ async function validateExisting(
     const markerInfo = await lstat(markerPath);
     if (markerInfo.isSymbolicLink() || !markerInfo.isFile()) throw new Error("marker is not a regular file");
     const rootReal = await realpath(root);
-    const stableMarker = await readStableFile(markerPath, rootReal, "managed marketplace marker", markerInfo);
+    const stableMarker = await readSecureFile(markerPath, rootReal, "managed marketplace marker", markerInfo);
     marker = JSON.parse(stableMarker.content.toString("utf8")) as ManagedMarker;
   } catch {
     throw new Error(`refusing to reuse unmanaged or incomplete marketplace directory: ${root}`);

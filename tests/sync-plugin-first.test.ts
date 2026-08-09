@@ -10,7 +10,6 @@ import {
 import { join } from "node:path";
 import { createArtifactKey } from "../src/plugins/artifact-key.ts";
 import { adapters } from "../src/adapters/index.ts";
-import type { RunPluginDegradationOptions } from "../src/plugins/degrade.ts";
 import type { PluginReconcileResult } from "../src/plugins/reconcile.ts";
 import { pluginReconcileTargets } from "../src/plugins/targets.ts";
 import type { PluginAdapter, PluginRecord } from "../src/plugins/types.ts";
@@ -103,8 +102,8 @@ describe("Cursor plugin reconciliation target", () => {
   });
 });
 
-describe("runSync (cross-pollinate)", () => {
-  test("reconciles plugins before MCP reads even with --no-skills", async () => {
+describe("runSync (plugin-only root)", () => {
+  test("reconciles plugins before targeted degradation without reading legacy MCP state", async () => {
     const events: string[] = [];
     const firstAdapter = adapters[0]!;
     const originalRead = firstAdapter.read;
@@ -114,7 +113,6 @@ describe("runSync (cross-pollinate)", () => {
     };
     try {
       const report = await runSyncCore({
-        skipSkills: true,
         reconcilePlugins: async ({ dryRun }) => {
           events.push("plugins");
           expect(dryRun).toBe(false);
@@ -125,21 +123,22 @@ describe("runSync (cross-pollinate)", () => {
           return degradationReport();
         },
       });
-      expect(events[0]).toBe("plugins");
-      expect(events.indexOf("plugins")).toBeLessThan(events.indexOf("mcp-read"));
-      expect(events.indexOf("mcp-read")).toBeLessThan(events.indexOf("degrade"));
-      expect(report.pluginDegradation.results).toEqual([]);
-      expect(report.skills?.message).toBe("skipped (--no-skills)");
+      expect(events).toEqual(["plugins", "degrade"]);
+      expect(report.reads).toEqual([]);
+      expect(report.union).toEqual({});
+      expect(report.conflicts).toEqual([]);
+      expect(report.writes).toEqual([]);
+      expect(report.pluginSkills).toBeUndefined();
+      expect(report.skills).toBeUndefined();
     } finally {
       firstAdapter.read = originalRead;
     }
   });
 
-  test("internal MCP-only mode skips plugins without conflating it with --no-skills", async () => {
+  test("internal MCP-only mode skips plugins and targeted degradation", async () => {
     let reconciled = false;
     let degraded = false;
     const report = await runSyncCore({
-      skipSkills: true,
       skipPlugins: true,
       reconcilePlugins: async () => {
         reconciled = true;
@@ -155,9 +154,13 @@ describe("runSync (cross-pollinate)", () => {
     expect(degraded).toBe(false);
     expect(report.plugins.results).toEqual([]);
     expect(report.pluginDegradation.results).toEqual([]);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.writes).toEqual([]);
+    expect(report.skills).toBeUndefined();
   });
 
-  test("dry-run reports exact skill and MCP degradation without writing", async () => {
+  test("dry-run reports exact targeted degradation without writing", async () => {
     let receivedDryRun: boolean | undefined;
     const artifact = await degradationArtifact(workDir);
     const eligible = eligibleDegradation(artifact);
@@ -185,43 +188,53 @@ describe("runSync (cross-pollinate)", () => {
       }),
     ]);
     expect(await Bun.file(join(workDir, ".gemini", "settings.json")).exists()).toBe(false);
-    expect(report.skills?.message).toBe("skipped (dry-run)");
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.writes).toEqual([]);
+    expect(report.skills).toBeUndefined();
   });
 
-  test("--no-skills suppresses loose skills but still performs exact MCP degradation", async () => {
-    const artifact = await degradationArtifact(workDir);
-    const eligible = eligibleDegradation(artifact);
-    let degradationOptions: RunPluginDegradationOptions | undefined;
-
+  test("skipBridge suppresses targeted degradation while still reconciling plugins", async () => {
+    let reconciled = false;
+    let degraded = false;
     const report = await runSyncCore({
-      dryRun: true,
-      skipSkills: true,
-      reconcilePlugins: async () => ({
-        ...pluginReport([eligible], [artifact]),
-        dryRun: true,
-      }),
-      degradePlugins: async (options) => {
-        degradationOptions = options;
-        const { runPluginDegradation } = await import("../src/plugins/degrade.ts");
-        return runPluginDegradation(options);
+      skipBridge: true,
+      reconcilePlugins: async () => {
+        reconciled = true;
+        return pluginReport();
+      },
+      degradePlugins: async () => {
+        degraded = true;
+        return degradationReport();
       },
     });
 
-    expect(degradationOptions?.includeSkills).toBe(false);
-    expect(degradationOptions?.includeMcp).toBe(true);
-    expect(report.pluginDegradation.results).toEqual([
-      expect.objectContaining({
-        component: "skills",
-        status: "skipped",
-        message: "suppressed (--no-skills)",
-      }),
-      expect.objectContaining({
-        component: "mcp",
-        status: "would-add",
-        added: ["bundled"],
-      }),
-    ]);
-    expect(report.skills?.message).toBe("skipped (--no-skills)");
+    expect(reconciled).toBe(true);
+    expect(degraded).toBe(false);
+    expect(report.pluginDegradation.results).toEqual([]);
+    expect(report.pluginDegradation.dryRun).toBe(false);
+    expect(report.skills).toBeUndefined();
+  });
+
+  test("deprecated --no-skills suppresses all targeted degradation", async () => {
+    let degraded = false;
+    const report = await runSyncCore({
+      dryRun: true,
+      skipSkills: true,
+      reconcilePlugins: async () => pluginReport(),
+      degradePlugins: async () => {
+        degraded = true;
+        return degradationReport();
+      },
+    });
+
+    expect(degraded).toBe(false);
+    expect(report.pluginDegradation.results).toEqual([]);
+    expect(report.pluginDegradation.dryRun).toBe(true);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.writes).toEqual([]);
+    expect(report.skills).toBeUndefined();
   });
 
   test("flagship builds external inventory, dry-runs safely, then repairs native activation", async () => {
@@ -255,6 +268,7 @@ enabled = true
 
     const records: PluginRecord[] = [];
     let installs = 0;
+    let managedSourcePath: string | undefined;
     const target: PluginAdapter = {
       id: "codex",
       configPath: () => join(workDir, ".codex", "config.toml"),
@@ -266,8 +280,9 @@ enabled = true
           plugins: [...records],
         };
       },
-      async installPlugin(name) {
+      async installPlugin(name, opts) {
         installs += 1;
+        managedSourcePath = opts.sourcePluginPath;
         records.push({ name, marketplace: "plugins-cli", enabled: true });
         return { agent: "codex", target: `${name}@plugins-cli`, status: "installed" };
       },
@@ -276,7 +291,9 @@ enabled = true
       },
     };
     const originalPath = process.env.PATH;
+    const originalDataHome = process.env.SYNCTHIS_DATA_HOME;
     process.env.PATH = "/nonexistent-syncthis-plugin-test";
+    process.env.SYNCTHIS_DATA_HOME = join(workDir, "syncthis-data");
     try {
       const preview = await runSyncCore({
         dryRun: true,
@@ -298,13 +315,17 @@ enabled = true
         status: "repaired",
         activatedAs: ["foo@plugins-cli"],
       });
+      expect(managedSourcePath).toMatch(/^.*\/syncthis-data\/syncthis\/plugins\//);
+      expect(managedSourcePath).not.toBe(root);
       expect(applied.ok).toBe(true);
     } finally {
       process.env.PATH = originalPath;
+      if (originalDataHome === undefined) delete process.env.SYNCTHIS_DATA_HOME;
+      else process.env.SYNCTHIS_DATA_HOME = originalDataHome;
     }
   });
 
-  test("plugin reconciliation failure makes the sync unsuccessful without blocking MCP union", async () => {
+  test("plugin reconciliation failure makes the plugin-only sync unsuccessful", async () => {
     await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
     const failed: PluginReconcileResult = {
       artifactKey: createArtifactKey({ id: "foo@plugins-cli", fixture: "failed" }),
@@ -320,16 +341,17 @@ enabled = true
     };
 
     const report = await runSyncCore({
-      skipSkills: true,
       reconcilePlugins: async () => pluginReport([failed]),
+      degradePlugins: async () => degradationReport(),
     });
 
     expect(report.ok).toBe(false);
     expect(syncHasFailures(report)).toBe(true);
     expect(report.plugins.failures).toEqual([failed]);
-    expect(report.union.gh).toEqual(STDIO);
-    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
-    expect(cursor.mcpServers.gh).toEqual(STDIO);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.writes).toEqual([]);
+    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).exists()).toBe(false);
   });
 
   test("targeted degradation failures make flagship sync unsuccessful", async () => {
@@ -347,7 +369,6 @@ enabled = true
     };
 
     const report = await runSyncCore({
-      skipSkills: true,
       reconcilePlugins: async () => pluginReport([eligible], [artifact]),
       degradePlugins: async () => degradationReport([failed]),
     });
@@ -355,6 +376,10 @@ enabled = true
     expect(report.pluginDegradation.failures).toEqual([failed]);
     expect(syncHasFailures(report)).toBe(true);
     expect(report.ok).toBe(false);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.conflicts).toEqual([]);
+    expect(report.writes).toEqual([]);
   });
 
   test("flagship CLI prints plugin inventory failures and exits non-zero", async () => {
@@ -363,7 +388,7 @@ enabled = true
     await Bun.write(marketplace, "{not json");
     const bin = join(import.meta.dir, "..", "bin", "syncthis.ts");
 
-    const result = spawnSync(process.execPath, [bin, "sync", "--dry-run", "--no-skills"], {
+    const result = spawnSync(process.execPath, [bin, "sync", "--dry-run", "--no-wrapper"], {
       encoding: "utf8",
       env: {
         ...process.env,
@@ -377,7 +402,7 @@ enabled = true
     expect(result.status).toBe(1);
     expect(result.stdout).toContain("plugin-index");
     expect(result.stdout).toContain("invalid JSON");
-    expect(result.stdout).toContain("sync completed with one or more failures");
+    expect(result.stdout).toContain("blocked     sync");
   });
 
   test("flagship CLI renders targeted would, skipped, and conflict states", async () => {
@@ -436,7 +461,7 @@ enabled = true
     await chmod(copilot, 0o755);
 
     const bin = join(import.meta.dir, "..", "bin", "syncthis.ts");
-    const result = spawnSync(process.execPath, [bin, "sync", "--dry-run", "--no-skills"], {
+    const result = spawnSync(process.execPath, [bin, "sync", "--dry-run"], {
       encoding: "utf8",
       env: {
         ...process.env,
@@ -448,12 +473,12 @@ enabled = true
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("targeted action follows");
-    expect(result.stdout).toContain("plugin fallback:");
-    expect(result.stdout).toContain("would add");
-    expect(result.stdout).toContain("conflict(s) left untouched");
-    expect(result.stdout).toContain("suppressed (--no-skills)");
+    expect(result.stdout).toMatch(/\b(?:native|adapted|partial|blocked|unsupported)\b/);
+    expect(result.stdout).toContain("partial");
+    expect(result.stdout).not.toContain("plugin reach:");
+    expect(result.stdout).not.toContain("would extend reach");
     expect(result.stdout).not.toContain("not applied");
+    expect(result.stdout).not.toMatch(/\b(?:skills?|mcp|npx)\b/i);
   });
 
   test("active native plugins produce no global skill fallback or degradation", async () => {

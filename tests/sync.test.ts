@@ -18,6 +18,8 @@ import {
   BIGQUERY,
   HTTP,
   STDIO,
+  degradationReport,
+  pluginReport,
   runSync,
   setupSyncTestEnvironment,
   writeAgentJson,
@@ -180,192 +182,126 @@ describe("codex adapter (TOML)", () => {
   });
 });
 
-describe("runSync (cross-pollinate)", () => {
-  test("propagates server from one agent to all others", async () => {
+describe("runSync (plugin-only root)", () => {
+  test("root sync runs plugin reconciliation and targeted degradation only", async () => {
     await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
+    const events: string[] = [];
 
-    const report = await runSync({ skipSkills: true });
-    expect(Object.keys(report.union)).toEqual(["gh"]);
+    const report = await runSync({
+      reconcilePlugins: async ({ dryRun }) => {
+        events.push("plugins");
+        expect(dryRun).toBe(false);
+        return pluginReport();
+      },
+      degradePlugins: async ({ includeSkills, includeMcp }) => {
+        events.push("degrade");
+        expect(includeSkills).toBe(true);
+        expect(includeMcp).toBe(true);
+        return degradationReport();
+      },
+    });
+
+    expect(events).toEqual(["plugins", "degrade"]);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
     expect(report.conflicts).toEqual([]);
-
-    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
-    expect(cursor.mcpServers.gh).toEqual(STDIO);
-
-    const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
-    expect(gemini.mcpServers.gh).toEqual(STDIO);
-
-    const codexText = await Bun.file(join(workDir, ".codex", "config.toml")).text();
-    const codex = TOML.parse(codexText) as Record<string, unknown>;
-    expect((codex.mcp_servers as Record<string, unknown>).gh).toBeDefined();
+    expect(report.writes).toEqual([]);
+    expect(report.pluginSkills).toBeUndefined();
+    expect(report.skills).toBeUndefined();
+    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).exists()).toBe(false);
   });
 
-  test("merges union from multiple agents", async () => {
+  test("skipBridge suppresses targeted degradation but still reconciles plugins", async () => {
+    let reconciled = false;
+    let degraded = false;
+    const report = await runSync({
+      skipBridge: true,
+      reconcilePlugins: async () => {
+        reconciled = true;
+        return pluginReport();
+      },
+      degradePlugins: async () => {
+        degraded = true;
+        return degradationReport();
+      },
+    });
+
+    expect(reconciled).toBe(true);
+    expect(degraded).toBe(false);
+    expect(report.pluginDegradation.results).toEqual([]);
+    expect(report.pluginDegradation.dryRun).toBe(false);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.writes).toEqual([]);
+    expect(report.skills).toBeUndefined();
+  });
+
+  test("deprecated --no-skills suppresses all targeted degradation", async () => {
+    let degraded = false;
+    const report = await runSync({
+      dryRun: true,
+      skipSkills: true,
+      reconcilePlugins: async () => pluginReport(),
+      degradePlugins: async () => {
+        degraded = true;
+        return degradationReport();
+      },
+    });
+
+    expect(degraded).toBe(false);
+    expect(report.pluginDegradation.results).toEqual([]);
+    expect(report.pluginDegradation.dryRun).toBe(true);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.writes).toEqual([]);
+    expect(report.skills).toBeUndefined();
+  });
+
+  test("dry-run passes through plugin work without legacy MCP writes", async () => {
+    let reconcileDryRun = false;
+    let degradeDryRun = false;
+    const report = await runSync({
+      dryRun: true,
+      reconcilePlugins: async ({ dryRun }) => {
+        reconcileDryRun = dryRun;
+        return { ...pluginReport(), dryRun };
+      },
+      degradePlugins: async ({ reconcile }) => {
+        degradeDryRun = reconcile.dryRun;
+        return degradationReport([], true);
+      },
+    });
+
+    expect(reconcileDryRun).toBe(true);
+    expect(degradeDryRun).toBe(true);
+    expect(report.plugins.dryRun).toBe(true);
+    expect(report.pluginDegradation.dryRun).toBe(true);
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
+    expect(report.conflicts).toEqual([]);
+    expect(report.writes).toEqual([]);
+    expect(report.skills).toBeUndefined();
+  });
+
+  test("root sync leaves existing MCP configs untouched", async () => {
     await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
     await writeAgentJson(workDir, ".cursor/mcp.json", { lin: HTTP });
+    const claudeBefore = await Bun.file(join(workDir, ".claude.json")).text();
+    const cursorBefore = await Bun.file(join(workDir, ".cursor", "mcp.json")).text();
 
-    const report = await runSync({ skipSkills: true });
-    expect(Object.keys(report.union).sort()).toEqual(["gh", "lin"]);
+    const report = await runSync({
+      reconcilePlugins: async () => pluginReport(),
+      degradePlugins: async () => degradationReport(),
+    });
 
-    const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
-    expect(gemini.mcpServers).toEqual({ gh: STDIO, lin: HTTP });
-  });
-
-  test("syncs HTTP MCPs from any source agent to every destination agent", async () => {
-    await Bun.write(
-      join(workDir, ".claude.json"),
-      JSON.stringify({ projects: { "/repo": { trustLevel: "trusted", mcpServers: {} } } }),
-    );
-
-    for (const source of adapters) {
-      const name = `from_${source.id.replace(/[^a-z0-9]/g, "_")}`;
-      const server: McpServer = { type: "http", url: `https://mcp.example.test/${name}` };
-      const seed = await source.write({ [name]: server }, { dryRun: false });
-      expect(seed.status).not.toBe("failed");
-
-      const report = await runSync({ skipSkills: true });
-      expect(report.conflicts).toEqual([]);
-      expect(report.union[name]).toEqual(server);
-
-      for (const destination of adapters) {
-        const read = await destination.read();
-        expect(read.error).toBeUndefined();
-        expect(read.servers[name]).toEqual(server);
-      }
-    }
-
-    const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
-    expect(claude.projects["/repo"].trustLevel).toBe("trusted");
-  });
-
-  test("sync writes the BigQuery remote to OpenCode disabled", async () => {
-    await writeAgentJson(workDir, ".cursor/mcp.json", { bigquery: BIGQUERY });
-    const report = await runSync({ skipSkills: true });
+    expect(report.reads).toEqual([]);
+    expect(report.union).toEqual({});
     expect(report.conflicts).toEqual([]);
-    const opencodeWrite = report.writes.find((w) => w.agent === "opencode")!;
-    expect(opencodeWrite.compatibility).toEqual([
-      expect.objectContaining({
-        agent: "opencode",
-        server: "bigquery",
-        code: "opencode-bigquery-output-schema-formats",
-        action: "disabled",
-      }),
-    ]);
-
-    const opencode = JSON.parse(await Bun.file(join(workDir, ".config", "opencode", "opencode.json")).text());
-    expect(opencode.mcp.bigquery).toMatchObject({
-      type: "remote",
-      url: BIGQUERY.url,
-      enabled: false,
-    });
+    expect(report.writes).toEqual([]);
+    expect(await Bun.file(join(workDir, ".claude.json")).text()).toBe(claudeBefore);
+    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).text()).toBe(cursorBefore);
   });
 
-  test("preserves conflict — leaves each agent's own version untouched", async () => {
-    const v1: McpServer = { type: "stdio", command: "version-one" };
-    const v2: McpServer = { type: "stdio", command: "version-two" };
-    await writeAgentJson(workDir, ".claude.json", { dup: v1, safe: STDIO });
-    await writeAgentJson(workDir, ".cursor/mcp.json", { dup: v2 });
-
-    const report = await runSync({ skipSkills: true });
-    expect(report.conflicts).toHaveLength(1);
-    expect(report.conflicts[0]!.name).toBe("dup");
-
-    const claude = JSON.parse(await Bun.file(join(workDir, ".claude.json")).text());
-    expect(claude.mcpServers.dup).toEqual(v1);
-    expect(claude.mcpServers.safe).toEqual(STDIO);
-
-    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
-    expect(cursor.mcpServers.dup).toEqual(v2);
-    expect(cursor.mcpServers.safe).toEqual(STDIO);
-
-    const gemini = JSON.parse(await Bun.file(join(workDir, ".gemini", "settings.json")).text());
-    expect(gemini.mcpServers.dup).toBeUndefined();
-    expect(gemini.mcpServers.safe).toEqual(STDIO);
-  });
-
-  test("idempotent — second sync is all unchanged", async () => {
-    await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
-    await runSync({ skipSkills: true });
-    const r2 = await runSync({ skipSkills: true });
-    for (const w of r2.writes) expect(w.status).toBe("unchanged");
-  });
-
-  test("dry-run does not write to any agent", async () => {
-    await writeAgentJson(workDir, ".claude.json", { gh: STDIO });
-    const r = await runSync({ skipSkills: true, dryRun: true });
-    expect(r.writes.every((w) => w.status === "synced" || w.status === "unchanged")).toBe(true);
-    expect(r.writes.filter((w) => w.message === "dry-run")).not.toHaveLength(0);
-    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).exists()).toBe(false);
-  });
-
-  test("with empty agents the sync is a no-op", async () => {
-    const r = await runSync({ skipSkills: true });
-    expect(r.union).toEqual({});
-    expect(r.conflicts).toEqual([]);
-    expect(r.writes.every((w) => w.status === "skipped")).toBe(true);
-    expect(await Bun.file(join(workDir, ".claude.json")).exists()).toBe(false);
-    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).exists()).toBe(false);
-    expect(await Bun.file(join(workDir, ".codex", "config.toml")).exists()).toBe(false);
-  });
-
-  test("empty sync does not add mcp containers to existing non-mcp configs", async () => {
-    await Bun.write(join(workDir, ".claude.json"), JSON.stringify({ projects: {} }));
-    const r = await runSync({ skipSkills: true });
-    const claudeWrite = r.writes.find((w) => w.agent === "claude-code")!;
-    expect(claudeWrite.status).toBe("skipped");
-    expect(JSON.parse(await Bun.file(join(workDir, ".claude.json")).text())).toEqual({ projects: {} });
-  });
-
-  test("flags conflicts when only env values differ", async () => {
-    const v1 = { type: "stdio" as const, command: "x", env: { TOK: "A" } };
-    const v2 = { type: "stdio" as const, command: "x", env: { TOK: "B" } };
-    await writeAgentJson(workDir, ".claude.json", { gh: v1 });
-    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: v2 });
-    const r = await runSync({ skipSkills: true });
-    expect(r.conflicts).toHaveLength(1);
-    expect(r.conflicts[0]!.name).toBe("gh");
-  });
-
-  test("preserves type:sse round-trip through codex", async () => {
-    const sse: McpServer = { type: "sse", url: "https://example.com/sse" };
-    await writeAgentJson(workDir, ".claude.json", { stream: sse });
-    await runSync({ skipSkills: true });
-    // Codex's TOML adapter explicitly preserves the sse type field on round-trip.
-    // Agents that can't represent sse (windsurf, copilot, hermes, opencode) downcast it
-    // to http — that's why URL transport is excluded from the canonical conflict identity
-    // (see canonicalShape in sync.ts), so a downcast never manufactures a conflict.
-    const codexRead = await codexAdapter.read();
-    expect(codexRead.servers.stream).toMatchObject({ type: "sse", url: "https://example.com/sse" });
-  });
-
-  test("sse server converges — no self-inflicted conflict on repeat sync", async () => {
-    // Regression: agents that can't store transport (windsurf/copilot/hermes/opencode)
-    // read an sse URL back as http. If transport were part of the conflict identity, the
-    // 2nd sync would see sse-vs-http for the same name and raise a conflict the user can
-    // never resolve. Transport is excluded from the identity, so sync must stay at zero
-    // conflicts across repeated runs.
-    await writeAgentJson(workDir, ".cursor/mcp.json", {
-      stream: { type: "sse", url: "https://example.com/sse" },
-    });
-    const r1 = await runSync({ skipSkills: true });
-    expect(r1.conflicts).toEqual([]);
-    const r2 = await runSync({ skipSkills: true });
-    expect(r2.conflicts).toEqual([]);
-    const r3 = await runSync({ skipSkills: true });
-    expect(r3.conflicts).toEqual([]);
-    // And the URL still propagated everywhere.
-    const hermes = await adapters.find((a) => a.id === "hermes-agent")!.read();
-    expect(hermes.servers.stream).toMatchObject({ url: "https://example.com/sse" });
-  });
-
-  test("corrupt file in one agent doesn't kill whole sync", async () => {
-    await Bun.write(join(workDir, ".claude.json"), "{not valid json");
-    await writeAgentJson(workDir, ".cursor/mcp.json", { gh: STDIO });
-    const r = await runSync({ skipSkills: true });
-    const claudeWrite = r.writes.find((w) => w.agent === "claude-code")!;
-    expect(claudeWrite.status).toBe("failed");
-    const cursorWrite = r.writes.find((w) => w.agent === "cursor")!;
-    expect(["synced", "unchanged"]).toContain(cursorWrite.status);
-  });
 
   test("directional sync refuses to apply when source cannot be read", async () => {
     await Bun.write(join(workDir, ".claude.json"), "{not valid json");
@@ -608,13 +544,17 @@ describe("claude per-project scope merge", () => {
     expect(data.projects["/x"].trustLevel).toBe("trusted");
   });
 
-  test("runSync surfaces per-project Claude servers to other agents", async () => {
+  test("root sync leaves per-project Claude MCP servers untouched", async () => {
     await writeAgentJson(workDir, ".claude.json", {}, {
       projects: { "/Users/me": { mcpServers: { stuck: STDIO } } },
     });
+    const before = await Bun.file(join(workDir, ".claude.json")).text();
     const r = await runSync({ skipSkills: true });
-    expect(Object.keys(r.union)).toEqual(["stuck"]);
-    const cursor = JSON.parse(await Bun.file(join(workDir, ".cursor", "mcp.json")).text());
-    expect(cursor.mcpServers.stuck).toEqual(STDIO);
+    expect(r.reads).toEqual([]);
+    expect(r.union).toEqual({});
+    expect(r.conflicts).toEqual([]);
+    expect(r.writes).toEqual([]);
+    expect(await Bun.file(join(workDir, ".claude.json")).text()).toBe(before);
+    expect(await Bun.file(join(workDir, ".cursor", "mcp.json")).exists()).toBe(false);
   });
 });

@@ -1,11 +1,11 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.16.0",
-  "description": "Install a Claude plugin once and reach it on every agent — syncthis decomposes plugins into skills + MCP servers for the other 11. Plus cross-agent MCP union sync across 12 AI coding agents (Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Windsurf, Antigravity, Copilot, OpenClaw, Hermes, Goose). Skills also reach Pi. Runs on Node — `npx @hungv47/syncthis run`.",
+  "version": "0.17.0",
+  "description": "Install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
   "type": "module",
   "license": "MIT",
   "author": "Le Vinh Hung <levinhhungg@gmail.com>",
-  "homepage": "https://syncthis.forsvn.com/",
+  "homepage": "https://github.com/hungv47/syncthis#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hungv47/syncthis.git"
@@ -14,8 +14,8 @@
     "url": "https://github.com/hungv47/syncthis/issues"
   },
   "keywords": [
-    "mcp",
-    "model-context-protocol",
+    "plugins",
+    "plugin-sync",
     "sync",
     "claude",
     "claude-code",
@@ -30,12 +30,11 @@
     "openclaw",
     "hermes",
     "goose",
+    "pi",
+    "cline",
     "ai-agents",
     "ai-tools",
-    "cli",
-    "config-sync",
-    "skills",
-    "plugins"
+    "cli"
   ],
   "bin": {
     "syncthis": "dist/syncthis.mjs"

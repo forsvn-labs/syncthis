@@ -66,6 +66,7 @@ describe("lower-layer composition boundaries", () => {
       ["hermes-agent", "none"],
       ["goose", "none"],
       ["pi", "none"],
+      ["cline", "none"],
     ]);
   });
 

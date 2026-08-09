@@ -1,11 +1,20 @@
 import { dim, green, red, row, yellow } from "./output.ts";
 
+export function neutralPluginText(value: unknown, fallback = "plugin reach unavailable"): string {
+  return String(value ?? fallback)
+    .replace(/\bnpx\b/gi, "plugin wrapper")
+    .replace(/\bskills?\b/gi, "plugin content")
+    .replace(/\bmcp\b/gi, "plugin wrapper");
+}
+
 export function printMirrorPreview(report: import("../plugins/mirror.ts").MirrorReport) {
   console.log(`Mirror plugins from ${green(report.from)} → every other agent (additive):`);
   for (const target of report.targets) {
     if (!target.diff) {
       if (target.unsupportedReason) {
-        console.log(`  ${dim("·")} ${target.to.padEnd(14)} ${dim(target.unsupportedReason)}`);
+        console.log(
+          `  ${dim("·")} ${target.to.padEnd(14)} ${dim(neutralPluginText(target.unsupportedReason))}`,
+        );
       }
       continue;
     }
@@ -23,7 +32,7 @@ export function printMirrorPreview(report: import("../plugins/mirror.ts").Mirror
     }
     for (const { plugin, reason } of unavailable) {
       console.log(
-        `      ${dim("·")} ${plugin.marketplace ? `${plugin.name}@${plugin.marketplace}` : plugin.name} ${dim(`unavailable — ${reason}`)}`,
+        `      ${dim("·")} ${plugin.marketplace ? `${plugin.name}@${plugin.marketplace}` : plugin.name} ${dim(`unavailable — ${neutralPluginText(reason)}`)}`,
       );
     }
   }
@@ -33,58 +42,56 @@ export function printMirrorPreview(report: import("../plugins/mirror.ts").Mirror
 }
 
 function printMcpCohortPreview(cohort: import("../plugins/mirror.ts").MirrorMcpCohort) {
-  const label = "mcp→agents";
+  const label = "plugin wrapper→agents";
   if (!cohort.supported) {
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(cohort.reason ?? "unsupported")}`);
+    console.log(`  ${dim("·")} ${label.padEnd(20)} ${dim(neutralPluginText(cohort.reason))}`);
     return;
   }
   if (cohort.servers.length === 0) {
     const why = cohort.skipped.length
-      ? `no portable MCP servers (${cohort.skipped.length} skipped)`
-      : "no plugin-bundled MCP servers to surface";
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(why)}`);
+      ? `no portable wrapper items (${cohort.skipped.length} skipped)`
+      : "no bundled wrapper items to surface";
+    console.log(`  ${dim("·")} ${label.padEnd(20)} ${dim(why)}`);
     return;
   }
   console.log(
-    `  ${green("→")} ${label.padEnd(14)} ${green("+")}${cohort.servers.length} ${dim(`server(s) → ${cohort.agents.length} non-plugin agents (lifted from plugins; additive, conflicts left untouched)`)}`,
+    `  ${green("→")} ${label.padEnd(20)} ${green("+")}${cohort.servers.length} bundled wrapper item(s) → ${cohort.agents.length} agents`,
   );
   for (const server of cohort.servers) {
     console.log(`      ${green("+")} ${server.name} ${dim(`(from ${server.plugin})`)}`);
   }
   for (const skipped of cohort.skipped) {
-    console.log(`      ${dim("·")} ${dim(`${skipped.name} skipped — ${skipped.reason}`)}`);
+    console.log(`      ${dim("·")} ${dim(`${skipped.name} skipped — ${neutralPluginText(skipped.reason)}`)}`);
   }
 }
 
 function printSkillCohortPreview(cohort: import("../plugins/mirror.ts").MirrorSkillCohort) {
-  const label = "skills→agents";
+  const label = "plugin reach→agents";
   if (!cohort.supported) {
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim(cohort.reason ?? "unsupported")}`);
+    console.log(`  ${dim("·")} ${label.padEnd(20)} ${dim(neutralPluginText(cohort.reason))}`);
     return;
   }
   const count = cohort.report?.sources.length ?? 0;
   if (count === 0) {
-    console.log(`  ${dim("·")} ${label.padEnd(14)} ${dim("no skill-bearing plugins to surface")}`);
+    console.log(`  ${dim("·")} ${label.padEnd(20)} ${dim("no plugin content to surface")}`);
     return;
   }
   console.log(
-    `  ${green("→")} ${label.padEnd(14)} ${green("+")}${count} ${dim(`repo(s) → ${cohort.agents.length} non-plugin agents (npx skills; additive, already-synced skipped)`)}`,
+    `  ${green("→")} ${label.padEnd(20)} ${green("+")}${count} source(s) → ${cohort.agents.length} agents`,
   );
 }
 
 function printCursorPush(cursor: import("../plugins/mirror.ts").CursorPush) {
   if (!cursor.supported) {
-    console.log(`  ${dim("·")} ${"cursor".padEnd(14)} ${dim(cursor.reason ?? "unsupported")}`);
+    console.log(`  ${dim("·")} ${"cursor".padEnd(14)} ${dim(neutralPluginText(cursor.reason))}`);
     return;
   }
   if (cursor.repos.length === 0) {
-    console.log(
-      `  ${dim("·")} ${"cursor".padEnd(14)} ${dim("no github-backed plugins to push")}`,
-    );
+    console.log(`  ${dim("·")} ${"cursor".padEnd(14)} ${dim("no plugin sources to push")}`);
     return;
   }
   console.log(
-    `  ${green("→")} ${"cursor".padEnd(14)} ${green("+")}${cursor.repos.length} ${dim("(via npx plugins; additive — cursor state not readable)")}`,
+    `  ${green("→")} ${"cursor".padEnd(14)} ${green("+")}${cursor.repos.length} ${dim("via plugin wrapper; additive")}`,
   );
   for (const repo of cursor.repos) console.log(`      ${green("+")} ${repo}`);
 }
@@ -105,13 +112,18 @@ export function printMirrorApplied(
         "skipped",
         target.to,
         plugin.marketplace ? `${plugin.name}@${plugin.marketplace}` : plugin.name,
-        reason,
+        neutralPluginText(reason),
       );
     }
     for (const install of target.installs ?? []) {
       if (install.status === "failed") {
         failed += 1;
-        row("failed", target.to, install.target, install.message);
+        row(
+          "failed",
+          target.to,
+          install.target,
+          neutralPluginText(install.message, "plugin install failed"),
+        );
       } else if (install.status === "skipped") {
         if (install.skillsFallbackRepo) continue;
         if (install.coveredBy) {
@@ -120,12 +132,17 @@ export function printMirrorApplied(
             "synced",
             target.to,
             install.target,
-            install.message ?? `covered by ${install.coveredBy}`,
+            neutralPluginText(install.message ?? `covered by ${install.coveredBy}`),
           );
         } else {
           skipped += 1;
           sawUnresolvedSkip = true;
-          row("skipped", target.to, install.target, install.message);
+          row(
+            "skipped",
+            target.to,
+            install.target,
+            neutralPluginText(install.message, "not available"),
+          );
         }
       } else if (install.status === "installed") {
         installed += 1;
@@ -135,69 +152,97 @@ export function printMirrorApplied(
     for (const fallback of target.skillsFallback ?? []) {
       if (fallback.status === "failed") {
         failed += 1;
-        row("failed", target.to, fallback.repo, `skills fallback: ${fallback.message ?? "failed"}`);
-      } else if (fallback.status === "added") {
-        installed += 1;
         row(
-          "synced",
+          "failed",
           target.to,
           fallback.repo,
-          "added as skills (npx skills — not loadable as a plugin here)",
+          `plugin reach fallback: ${neutralPluginText(fallback.message, "failed")}`,
         );
+      } else if (fallback.status === "added") {
+        installed += 1;
+        row("synced", target.to, fallback.repo, "extended reach through the plugin wrapper");
       } else {
         skipped += 1;
-        row("skipped", target.to, fallback.repo, fallback.message ?? "no skills in bundle");
+        row(
+          "skipped",
+          target.to,
+          fallback.repo,
+          neutralPluginText(fallback.message, "no plugin content in bundle"),
+        );
       }
     }
   }
+
   if (report.cursor.supported) {
     for (const result of report.cursor.results) {
       if (result.status === "failed") {
         failed += 1;
-        row("failed", "cursor", result.repo, result.message);
+        row(
+          "failed",
+          "cursor",
+          result.repo,
+          neutralPluginText(result.message, "plugin push failed"),
+        );
       } else {
         installed += 1;
-        row("synced", "cursor", result.repo, "installed (npx plugins)");
+        row("synced", "cursor", result.repo, "installed through the plugin wrapper");
       }
     }
   } else if (report.cursor.reason) {
     skipped += 1;
-    row("skipped", "cursor", "", report.cursor.reason);
+    row("skipped", "cursor", "", neutralPluginText(report.cursor.reason));
   }
+
   if (!report.skillCohort.supported) {
     if (report.skillCohort.reason) {
       skipped += 1;
-      row("skipped", "skills→agents", "", report.skillCohort.reason);
+      row("skipped", "plugin-reach", "", neutralPluginText(report.skillCohort.reason));
     }
   } else {
     for (const result of report.skillCohort.report?.results ?? []) {
       if (result.status === "failed") {
         failed += 1;
-        row("failed", "skills→agents", result.repo, result.message);
+        row(
+          "failed",
+          "plugin-reach",
+          result.repo,
+          neutralPluginText(result.message, "plugin reach failed"),
+        );
       } else if (result.status === "added") {
         installed += 1;
         row(
           "synced",
-          "skills→agents",
+          "plugin-reach",
           result.repo,
-          `added to ${report.skillCohort.agents.length} non-plugin agents`,
+          `added to ${report.skillCohort.agents.length} agents`,
         );
       }
     }
   }
+
   if (!report.mcpCohort.supported) {
     if (report.mcpCohort.reason) {
       skipped += 1;
-      row("skipped", "mcp→agents", "", report.mcpCohort.reason);
+      row("skipped", "plugin-wrapper", "", neutralPluginText(report.mcpCohort.reason));
     }
   } else {
     for (const result of report.mcpCohort.results ?? []) {
       if (result.status === "failed") {
         failed += 1;
-        row("failed", result.agent, "", `mcp: ${result.message ?? "failed"}`);
+        row(
+          "failed",
+          result.agent,
+          "",
+          `plugin wrapper: ${neutralPluginText(result.message, "failed")}`,
+        );
       } else if (result.added.length) {
         installed += result.added.length;
-        row("synced", result.agent, "", `+${result.added.length} mcp: ${result.added.join(", ")}`);
+        row(
+          "synced",
+          result.agent,
+          "",
+          `+${result.added.length} bundled wrapper item(s): ${result.added.join(", ")}`,
+        );
       }
       if (result.conflicts.length) {
         row(
@@ -209,6 +254,7 @@ export function printMirrorApplied(
       }
     }
   }
+
   const parts = [
     installed ? green(`${installed} added`) : "",
     covered ? dim(`${covered} already covered`) : "",
@@ -219,7 +265,7 @@ export function printMirrorApplied(
   if (!provision && sawUnresolvedSkip) {
     console.log(
       dim(
-        "tip: skipped plugins had no marketplace Codex could resolve — re-run without --no-provision to register their marketplaces and add unloadable bundles as skills.",
+        "tip: some plugins were not resolvable on a target; re-run without --no-provision to register target marketplaces.",
       ),
     );
   }
@@ -230,70 +276,101 @@ export function printPluginAdd(
   report: import("../plugins/add.ts").PluginAddReport,
   preview: boolean,
 ): number {
-  const targets = report.requestedAgents.filter((agent) => agent !== "claude-code");
+  const targets = report.requestedAgents.filter((agent) => agent !== report.source);
   console.log(
-    `${preview ? "Add" : "Added"} ${report.plugins.map((plugin) => green(plugin)).join(", ")} → ${targets.join(", ") || dim("(no targets)")} ${dim("(source: claude-code)")}`,
+    `${preview ? "Add" : "Added"} ${report.plugins.map((plugin) => green(plugin)).join(", ")} → ${targets.join(", ") || dim("(no targets)")} ${dim(`(source: ${report.source})`)}`,
   );
   for (const name of report.notFound) {
-    row("missing", "claude-code", name, "not installed on the source");
+    row("missing", report.source, name, "not installed on the source");
   }
   let failed = 0;
   for (const install of report.installs) {
     if (install.status === "failed") {
       failed += 1;
-      row("failed", install.agent, install.target, install.message);
+      row(
+        "failed",
+        install.agent,
+        install.target,
+        neutralPluginText(install.message, "plugin install failed"),
+      );
     } else if (install.status === "present") {
       row("synced", install.agent, install.target, "already present");
     } else if (install.status === "installed") {
       row("synced", install.agent, install.target, preview ? "would install" : "installed");
     } else if (install.status === "skipped" && !install.skillsFallbackRepo) {
-      row("skipped", install.agent, install.target, install.message);
+      row(
+        "skipped",
+        install.agent,
+        install.target,
+        neutralPluginText(install.message, "not available"),
+      );
     }
   }
   if (report.cursor) {
     for (const result of report.cursor.results) {
       if (result.status === "failed") {
         failed += 1;
-        row("failed", "cursor", result.repo, result.message);
+        row(
+          "failed",
+          "cursor",
+          result.repo,
+          neutralPluginText(result.message, "plugin push failed"),
+        );
       } else {
-        row("synced", "cursor", result.repo, "installed (npx plugins)");
+        row("synced", "cursor", result.repo, "installed through the plugin wrapper");
       }
     }
     if (preview) {
-      for (const repo of report.cursor.repos) row("synced", "cursor", repo, "would push");
+      for (const repo of report.cursor.repos) {
+        row("synced", "cursor", repo, "would push through the plugin wrapper");
+      }
     }
   }
-  for (const skill of report.skills) {
-    if (skill.status === "failed") {
+  for (const content of report.skills) {
+    if (content.status === "failed") {
       failed += 1;
-      row("failed", "skills", skill.repo, skill.message);
+      row(
+        "failed",
+        "plugin-reach",
+        content.repo,
+        neutralPluginText(content.message, "plugin reach failed"),
+      );
     } else {
       row(
         "synced",
-        "skills",
-        skill.repo,
-        preview ? "would add" : skill.status === "skipped" ? (skill.message ?? "no skills") : "added",
+        "plugin-reach",
+        content.repo,
+        preview
+          ? "would extend reach"
+          : content.status === "skipped"
+            ? neutralPluginText(content.message, "no plugin content")
+            : "extended reach",
       );
     }
   }
-  for (const mcp of report.mcp) {
-    if (mcp.status === "failed") {
+  for (const wrapper of report.mcp) {
+    if (wrapper.status === "failed") {
       failed += 1;
-      row("failed", mcp.agent, "", `mcp: ${mcp.message ?? "failed"}`);
-    } else if (mcp.added.length) {
+      row(
+        "failed",
+        wrapper.agent,
+        "",
+        `plugin wrapper: ${neutralPluginText(wrapper.message, "failed")}`,
+      );
+    } else if (wrapper.added.length) {
       row(
         "synced",
-        mcp.agent,
+        wrapper.agent,
         "",
-        `${preview ? "would add " : "+"}${mcp.added.length} mcp: ${mcp.added.join(", ")}`,
+        `${preview ? "would add " : "+"}${wrapper.added.length} bundled wrapper item(s): ${wrapper.added.join(", ")}`,
       );
     }
-    if (mcp.conflicts.length) {
+    if (wrapper.conflicts.length) {
       row(
         "drift",
-        mcp.agent,
+        wrapper.agent,
         "",
-        `${mcp.conflicts.length} mcp conflict(s) left untouched: ${mcp.conflicts.join(", ")}`,
+        `${wrapper.conflicts.length} conflict(s) left untouched: ${wrapper.conflicts.join(", ")}`,
       );
     }
   }
@@ -306,7 +383,7 @@ export function printPluginOverview(
   console.log("Plugins across your agents:\n");
   for (const result of overview.native) {
     if (result.error) {
-      row("invalid", result.agent, result.configPath, result.error);
+      row("invalid", result.agent, result.configPath, neutralPluginText(result.error));
       continue;
     }
     if (!result.exists) {
@@ -325,32 +402,8 @@ export function printPluginOverview(
     "missing",
     "cursor",
     "~/.cursor",
-    "write-only plugin target — Cursor's plugin state isn't readable",
+    "write-only plugin target — state isn't readable",
   );
-
-  console.log(dim("\nplugin-derived skills (on agents that can't load plugins natively):"));
-  if (!overview.skillsReadable) {
-    console.log(dim("  couldn't read `npx skills list` — derived-skill view unavailable"));
-    return;
-  }
-  if (overview.derivedRepos.length === 0) {
-    console.log(
-      dim(
-        "  none surfaced yet — use `syncthis` → Manage plugins → Sync plugins, or `syncthis mirror claude-code` for batch all",
-      ),
-    );
-    return;
-  }
-  console.log(dim(`  source repos: ${overview.derivedRepos.join(", ")}`));
-  const union = new Set<string>();
-  for (const derived of overview.derived) {
-    for (const skill of derived.skills) union.add(skill.name);
-  }
-  if (union.size) console.log(dim(`  skills: ${[...union].sort().join(", ")}`));
-  for (const derived of overview.derived) {
-    const glyph = derived.skills.length ? green("✓") : dim("·");
-    console.log(`  ${glyph} ${derived.agent.padEnd(14)} ${derived.skills.length} skill(s)`);
-  }
 }
 
 export function printUninstallPreview(
@@ -362,7 +415,12 @@ export function printUninstallPreview(
       ? `${target.plugin}@${target.marketplace}`
       : target.plugin;
     if (target.unreadable) {
-      row("invalid", target.agent, "", `can't read plugins: ${target.unreadable}`);
+      row(
+        "invalid",
+        target.agent,
+        "",
+        `can't read plugins: ${neutralPluginText(target.unreadable)}`,
+      );
     } else if (target.present) {
       console.log(`  ${red("-")} ${target.agent.padEnd(14)} ${name} ${dim("(native plugin)")}`);
     } else {
@@ -371,13 +429,13 @@ export function printUninstallPreview(
   }
   if (report.skills.names.length && report.skills.agents.length) {
     console.log(
-      `  ${red("-")} ${"skills".padEnd(14)} ${red(`${report.skills.names.length}`)} skill(s) from ${report.skills.agents.length} non-plugin agent(s)`,
+      `  ${red("-")} ${"plugin-reach".padEnd(14)} ${red(`${report.skills.names.length}`)} bundled item(s) from ${report.skills.agents.length} agent(s)`,
     );
     console.log(`      ${dim(`names:  ${report.skills.names.join(", ")}`)}`);
     console.log(`      ${dim(`agents: ${report.skills.agents.join(", ")}`)}`);
   } else if (report.skills.names.length) {
     console.log(
-      `  ${dim("·")} ${"skills".padEnd(14)} ${dim("derived skills exist, but none of the scoped agents hold them")}`,
+      `  ${dim("·")} ${"plugin-reach".padEnd(14)} ${dim("bundled content exists, but none of the scoped agents hold it")}`,
     );
   }
   if (report.skills.kept.length) {
@@ -387,16 +445,21 @@ export function printUninstallPreview(
   }
   for (const target of report.mcp) {
     if (target.unreadable) {
-      row("invalid", target.agent, "", `mcp: can't read target: ${target.unreadable}`);
+      row(
+        "invalid",
+        target.agent,
+        "",
+        `plugin wrapper: can't read target: ${neutralPluginText(target.unreadable)}`,
+      );
     } else if (target.names.length) {
       const count = target.names.length;
       console.log(
-        `  ${red("-")} ${target.agent.padEnd(14)} ${red(`${count}`)} MCP server${count === 1 ? "" : "s"}: ${target.names.join(", ")}`,
+        `  ${red("-")} ${target.agent.padEnd(14)} ${red(`${count}`)} bundled wrapper item(s): ${target.names.join(", ")}`,
       );
     }
     if (target.kept.length) {
       console.log(
-        dim(`  kept MCP (still provided by another installed plugin): ${target.kept.join(", ")}`),
+        dim(`  kept wrapper items (still provided by another installed plugin): ${target.kept.join(", ")}`),
       );
     }
     if (target.conflicts.length) {
@@ -404,19 +467,19 @@ export function printUninstallPreview(
         "drift",
         target.agent,
         "",
-        `MCP conflict(s) left untouched: ${target.conflicts.join(", ")}`,
+        `wrapper conflict(s) left untouched: ${target.conflicts.join(", ")}`,
       );
     }
   }
   for (const agent of report.unsupportedAgents) {
     console.log(
-      `  ${dim("·")} ${agent.padEnd(14)} ${dim("can't uninstall here (write-only plugin target, no list/uninstall CLI)")}`,
+      `  ${dim("·")} ${agent.padEnd(14)} ${dim("can't uninstall here (write-only plugin target)")}`,
     );
   }
   if (report.claudeReadError && report.skillScope.length) {
     console.log(
       yellow(
-        `  ! couldn't read Claude's plugins (${report.claudeReadError}) — can't resolve which surfaced skills to remove from ${report.skillScope.join(", ")}; those skills will be left in place`,
+        `  ! couldn't read Claude's plugins (${neutralPluginText(report.claudeReadError)}) — bundled content on ${report.skillScope.join(", ")} was left in place`,
       ),
     );
   }
@@ -437,10 +500,20 @@ export function printUninstallApplied(
       absent += 1;
     } else if (result.status === "skipped") {
       skipped += 1;
-      row("skipped", result.agent, result.target, result.message);
+      row(
+        "skipped",
+        result.agent,
+        result.target,
+        neutralPluginText(result.message, "skipped"),
+      );
     } else {
       failed += 1;
-      row("failed", result.agent, result.target, result.message);
+      row(
+        "failed",
+        result.agent,
+        result.target,
+        neutralPluginText(result.message, "plugin uninstall failed"),
+      );
     }
   }
   if (report.skillResult) {
@@ -449,43 +522,62 @@ export function printUninstallApplied(
       removed += result.skills.length;
       row(
         "synced",
-        "skills",
+        "plugin-reach",
         "",
-        `removed ${result.skills.length} skill(s) from ${result.agents.length} agent(s)`,
+        `removed ${result.skills.length} bundled item(s) from ${result.agents.length} agent(s)`,
       );
     } else if (result.status === "skipped") {
       skipped += 1;
-      row("skipped", "skills", "", result.message);
+      row("skipped", "plugin-reach", "", neutralPluginText(result.message, "skipped"));
     } else {
       failed += 1;
-      row("failed", "skills", "", result.message);
+      row(
+        "failed",
+        "plugin-reach",
+        "",
+        neutralPluginText(result.message, "plugin reach removal failed"),
+      );
     }
   }
   for (const result of report.mcpResults ?? []) {
     if (result.status === "failed") {
       failed += 1;
-      row("failed", result.agent, "", `mcp: ${result.message ?? "failed"}`);
+      row(
+        "failed",
+        result.agent,
+        "",
+        `plugin wrapper: ${neutralPluginText(result.message, "failed")}`,
+      );
     } else if (result.status === "synced") {
       removed += result.removed.length;
-      const count = result.removed.length;
       row(
         "synced",
         result.agent,
         "",
-        `removed ${count} MCP server${count === 1 ? "" : "s"}: ${result.removed.join(", ")}`,
+        `removed ${result.removed.length} bundled wrapper item(s): ${result.removed.join(", ")}`,
       );
     } else if (result.status === "skipped") {
       skipped += 1;
-      row("skipped", result.agent, "", `mcp: ${result.message ?? "skipped"}`);
+      row(
+        "skipped",
+        result.agent,
+        "",
+        `plugin wrapper: ${neutralPluginText(result.message, "skipped")}`,
+      );
     } else if (result.message) {
-      row("unchanged", result.agent, "", `mcp: ${result.message}`);
+      row(
+        "unchanged",
+        result.agent,
+        "",
+        `plugin wrapper: ${neutralPluginText(result.message)}`,
+      );
     }
     if (result.conflicts.length) {
       row(
         "drift",
         result.agent,
         "",
-        `MCP conflict(s) left untouched: ${result.conflicts.join(", ")}`,
+        `wrapper conflict(s) left untouched: ${result.conflicts.join(", ")}`,
       );
     }
   }

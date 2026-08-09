@@ -16,9 +16,9 @@ export const PLUGIN_TARGET_AGENTS: readonly AgentId[] = ["claude-code", "codex",
 
 // Agents that support skills (vercel-labs/skills) but have NO native MCP config to
 // sync, so they get no MCP adapter — they appear in the SKILL cohort only, never in
-// MCP sync or the plugin→MCP decomposition. Pi (badlogic/pi-mono) ships without MCP
-// by design ("No MCP"); its skills id is `pi`, skills land in ~/.pi/agent/skills.
-export const SKILL_ONLY_AGENTS: readonly AgentId[] = ["pi"];
+// MCP sync or the plugin→MCP decomposition. Pi (badlogic/pi-mono) and Cline ship
+// without native MCP here; both consume the universal ~/.agents/skills store.
+export const SKILL_ONLY_AGENTS: readonly AgentId[] = ["pi", "cline"];
 
 // The MCP cohort: every MCP-syncable agent that is NOT plugin-capable. These are the
 // targets for the plugin→MCP decomposition (the plugin cohort gets a plugin's MCP
@@ -29,8 +29,8 @@ export function mcpCohort(): AgentId[] {
 }
 
 // The skill cohort: every non-plugin agent that can receive skills via
-// `npx skills add -a <agent>`. That's the MCP cohort plus skills-only agents (Pi),
-// since skills reach more agents than native MCP sync does.
+// `npx skills add -a <agent>`. That's the MCP cohort plus skills-only agents (Pi,
+// Cline), since skills reach more agents than native MCP sync does.
 export function skillCohort(): AgentId[] {
   return [...new Set([...mcpCohort(), ...SKILL_ONLY_AGENTS])];
 }
@@ -188,6 +188,8 @@ const SKILL_AGENT_LABELS: Record<string, AgentId> = {
   hermes: "hermes-agent",
   goose: "goose",
   pi: "pi",
+  cline: "cline",
+  "cline cli": "cline",
 };
 
 export function skillAgentLabelToId(label: string): AgentId | undefined {
@@ -200,10 +202,16 @@ const SKILL_AGENT_CLI_IDS: Partial<Record<AgentId, string>> = {
   // the whole multi-agent add/remove invocation, so translate only at the process
   // boundary and keep syncthis' public agent id stable.
   "kimi-cli": "kimi-code-cli",
+  pi: "universal",
+  cline: "universal",
 };
 
 export function skillAgentIdToCliId(agent: AgentId): string {
   return SKILL_AGENT_CLI_IDS[agent] ?? agent;
+}
+
+function uniqueSkillAgentCliIds(agents: readonly AgentId[]): string[] {
+  return [...new Set(agents.map(skillAgentIdToCliId))];
 }
 
 // `path` is the skill's location in the shared store (~/.agents/skills/<name>) — a
@@ -375,7 +383,7 @@ async function skillName(skillMdPath: string): Promise<string> {
 // repo provides, globally, into each named agent, non-interactively.
 export function addArgs(repo: string, agents: readonly AgentId[]): string[] {
   const args = ["-y", "skills", "add", repo, "-g", "-s", "*"];
-  for (const a of agents) args.push("-a", skillAgentIdToCliId(a));
+  for (const target of uniqueSkillAgentCliIds(agents)) args.push("-a", target);
   args.push("-y");
   return args;
 }
@@ -431,7 +439,7 @@ function addOne(repo: string, agents: readonly AgentId[]): Promise<SkillAddResul
 // already-installed skill (sourced from its shared-store dir) onto more agents.
 export function installedAddArgs(storePath: string, name: string, agents: readonly AgentId[]): string[] {
   const args = ["-y", "skills", "add", storePath, "-g", "-s", name];
-  for (const a of agents) args.push("-a", skillAgentIdToCliId(a));
+  for (const target of uniqueSkillAgentCliIds(agents)) args.push("-a", target);
   args.push("-y");
   return args;
 }
@@ -523,7 +531,7 @@ export type SkillRemoveResult = {
 // production by the mirror — rather than packing values into a single variadic flag.
 export function removeArgs(names: string[], agents: readonly AgentId[]): string[] {
   const args = ["-y", "skills", "remove", "-g"];
-  for (const a of agents) args.push("-a", skillAgentIdToCliId(a));
+  for (const target of uniqueSkillAgentCliIds(agents)) args.push("-a", target);
   for (const n of names) args.push("-s", n);
   args.push("-y");
   return args;

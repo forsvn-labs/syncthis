@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentId } from "../src/types.ts";
@@ -297,6 +297,102 @@ describe("plugin reconciliation core", () => {
       expect(harness.installCalls).toBe(0);
     } finally {
       await rm(source, { recursive: true, force: true });
+    }
+  });
+
+  test("materializes an apply-time local package and installs from the managed root", async () => {
+    const harness = adapterHarness("codex", {
+      activateOnInstall: { name: "foo", marketplace: "plugins-cli", enabled: true },
+    });
+    const source = await mkdtemp(join(tmpdir(), "syncthis-reconcile-package-"));
+    const store = await mkdtemp(join(tmpdir(), "syncthis-reconcile-store-"));
+    await writeFile(join(source, "plugin.json"), JSON.stringify({ name: "foo" }));
+
+    try {
+      const report = await runPluginReconcile({
+        dryRun: false,
+        inventory: inventory(artifact({ pluginRoot: source, configuredOn: ["codex"] })),
+        targets: [verifiedTarget(harness)],
+        storeRoot: store,
+      });
+
+      expect(report.results[0]?.status).toBe("repaired");
+      const managed = harness.installRequests[0]?.opts.sourcePluginPath;
+      expect(managed).toBeDefined();
+      expect(managed).not.toBe(source);
+      expect(managed?.startsWith(`${store}/`)).toBe(true);
+      expect(await Bun.file(join(managed!, "plugin.json")).exists()).toBe(true);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+
+  test("dry-run validates the same invalid store destination as apply without writing", async () => {
+    const harness = adapterHarness("codex");
+    const source = await mkdtemp(join(tmpdir(), "syncthis-reconcile-dry-store-source-"));
+    const storeFile = join(tmpdir(), `syncthis-reconcile-invalid-store-${process.pid}-${Date.now()}`);
+    await writeFile(join(source, "plugin.json"), JSON.stringify({ name: "foo" }));
+    await writeFile(storeFile, "not a directory");
+
+    try {
+      const options = {
+        inventory: inventory(artifact({ pluginRoot: source, configuredOn: ["codex"] })),
+        targets: [verifiedTarget(harness)],
+        storeRoot: storeFile,
+      };
+      const preview = await runPluginReconcile({ dryRun: true, ...options });
+      const applied = await runPluginReconcile({ dryRun: false, ...options });
+      expect(preview.results[0]).toMatchObject({ status: "failed" });
+      expect(preview.results[0]?.message).toMatch(/store root|directory/i);
+      expect(applied.results[0]).toMatchObject({ status: "failed" });
+      expect(applied.results[0]?.message).toMatch(/store root|directory/i);
+      expect(await Bun.file(storeFile).text()).toBe("not a directory");
+      expect(harness.installCalls).toBe(0);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+      await rm(storeFile, { force: true });
+    }
+  });
+
+  test("one package is materialized once and reused across targets", async () => {
+    const first = adapterHarness("codex", {
+      activateOnInstall: { name: "foo", enabled: true },
+    });
+    const second = adapterHarness("claude-code", {
+      activateOnInstall: { name: "foo", enabled: true },
+    });
+    const source = await mkdtemp(join(tmpdir(), "syncthis-reconcile-cache-source-"));
+    const store = await mkdtemp(join(tmpdir(), "syncthis-reconcile-cache-store-"));
+    const outside = join(tmpdir(), `syncthis-reconcile-cache-outside-${process.pid}-${Date.now()}`);
+    const payload = join(source, "payload.txt");
+    await writeFile(join(source, "plugin.json"), JSON.stringify({ name: "foo" }));
+    await writeFile(payload, "source bytes");
+    await writeFile(outside, "outside bytes");
+
+    const install = first.adapter.installPlugin.bind(first.adapter);
+    first.adapter.installPlugin = async (name, opts) => {
+      const result = await install(name, opts);
+      await rm(payload);
+      await symlink(outside, payload);
+      return result;
+    };
+
+    try {
+      const report = await runPluginReconcile({
+        dryRun: false,
+        inventory: inventory(artifact({ pluginRoot: source })),
+        targets: [verifiedTarget(first), verifiedTarget(second)],
+        storeRoot: store,
+      });
+
+      expect(report.results.map((result) => result.status)).toEqual(["installed", "installed"]);
+      expect(first.installRequests[0]?.opts.sourcePluginPath).toBe(second.installRequests[0]?.opts.sourcePluginPath);
+      expect(first.installRequests[0]?.opts.sourcePluginPath).toMatch(new RegExp(`^${store}/`));
+    } finally {
+      await rm(source, { recursive: true, force: true });
+      await rm(store, { recursive: true, force: true });
+      await rm(outside, { force: true });
     }
   });
 

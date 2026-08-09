@@ -94,13 +94,14 @@ describe("mcpCohort / skillCohort", () => {
     expect(cohort.length).toBe(9);
   });
 
-  test("skillCohort = mcpCohort plus skills-only agents (pi)", () => {
+  test("skillCohort = mcpCohort plus skills-only agents (pi, cline)", () => {
     const cohort = skillCohort();
     for (const a of PLUGIN_TARGET_AGENTS) expect(cohort).not.toContain(a);
     expect(cohort).toContain("pi");
+    expect(cohort).toContain("cline");
     expect(cohort).toContain("goose");
     expect(cohort).toContain("gemini-cli");
-    expect(cohort.length).toBe(10);
+    expect(cohort.length).toBe(11);
   });
 });
 
@@ -113,7 +114,10 @@ describe("addArgs", () => {
 
   test("translates syncthis agent ids to upstream skills CLI ids", () => {
     expect(skillAgentIdToCliId("kimi-cli")).toBe("kimi-code-cli");
+    expect(skillAgentIdToCliId("pi")).toBe("universal");
+    expect(skillAgentIdToCliId("cline")).toBe("universal");
     expect(skillAgentLabelToId("Kimi Code CLI")).toBe("kimi-cli");
+    expect(skillAgentLabelToId("Cline")).toBe("cline");
     expect(skillAgentLabelToId("Antigravity")).toBe("antigravity");
     expect(skillAgentLabelToId("Antigravity CLI")).toBeUndefined();
     expect(addArgs("owner/repo", ["kimi-cli", "opencode"])).toEqual([
@@ -124,6 +128,18 @@ describe("addArgs", () => {
     ]);
     expect(removeArgs(["alpha"], ["kimi-cli", "opencode"])).toEqual([
       "-y", "skills", "remove", "-g", "-a", "kimi-code-cli", "-a", "opencode", "-s", "alpha", "-y",
+    ]);
+  });
+
+  test("dedupes Pi and Cline's shared universal target", () => {
+    expect(addArgs("owner/repo", ["pi", "cline"])).toEqual([
+      "-y", "skills", "add", "owner/repo", "-g", "-s", "*", "-a", "universal", "-y",
+    ]);
+    expect(installedAddArgs("/store/alpha", "alpha", ["pi", "cline"])).toEqual([
+      "-y", "skills", "add", "/store/alpha", "-g", "-s", "alpha", "-a", "universal", "-y",
+    ]);
+    expect(removeArgs(["alpha"], ["pi", "cline"])).toEqual([
+      "-y", "skills", "remove", "-g", "-a", "universal", "-s", "alpha", "-y",
     ]);
   });
 });
@@ -210,7 +226,7 @@ describe("addSkillsFromPlugins", () => {
     expect(r.ran).toBe(true);
     expect(r.dryRun).toBe(true);
     expect(r.results).toEqual([{ repo: "owner/a", status: "added", message: "dry-run" }]);
-    expect(r.agents.length).toBe(10);
+    expect(r.agents.length).toBe(11);
     const inv = await readInvocations();
     expect(inv.some((l) => /skills add/.test(l))).toBe(false);
   });

@@ -226,4 +226,49 @@ describe("runPluginAdd", () => {
       ),
     ).toBe(true);
   });
+
+  test("uses a readable Codex local record as source without invoking Claude", async () => {
+    const local = join(workDir, "plugins", "codex-source");
+    await writePluginWithMcp(local, "codex-srv");
+    await mkdir(join(local, "skills", "codex-source"), { recursive: true });
+    await writeFile(
+      join(local, "skills", "codex-source", "SKILL.md"),
+      "---\nname: codex-source\n---\n",
+    );
+    const canonical = await realpath(local);
+    await installFakeCodex(
+      codexTable([["foo@plugins-cli", "installed, enabled", "1.0.0", local]]),
+    );
+    await installFakeNpx();
+
+    const preview = await runPluginAdd({
+      from: "codex",
+      plugins: ["foo"],
+      agents: ["codex", "opencode"],
+      apply: false,
+    });
+    expect(preview.source).toBe("codex");
+    expect(preview.installs).toEqual([]);
+    expect(preview.skills.map((result) => result.repo)).toContain(canonical);
+    expect(preview.mcp.find((result) => result.agent === "opencode")?.added).toContain("codex-srv");
+
+    const applied = await runPluginAdd({
+      from: "codex",
+      plugins: ["foo"],
+      agents: ["codex", "opencode"],
+      apply: true,
+    });
+    expect(applied.source).toBe("codex");
+    expect(applied.installs.every((result) => result.agent !== "codex")).toBe(true);
+    expect(applied.skills.map((result) => result.repo)).toContain(canonical);
+    expect(applied.mcp.find((result) => result.agent === "opencode")?.added).toContain("codex-srv");
+
+    const invocations = await readInvocations();
+    expect(invocations.some((line) => line.includes(`skills add ${canonical}`) && line.includes("-a opencode"))).toBe(true);
+    expect(invocations.some((line) => line.startsWith("claude "))).toBe(false);
+    const opencode = JSON.parse(
+      await readFile(join(workDir, ".config", "opencode", "opencode.json"), "utf8"),
+    );
+    expect(opencode.mcp?.["codex-srv"]).toBeDefined();
+  });
 });

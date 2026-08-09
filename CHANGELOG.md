@@ -2,6 +2,18 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.17.0] — 2026-08-10
+
+### Added
+- **Install once, use everywhere.** The default sync now discovers installed Agent Plugins from every readable native client, materializes a source-independent package, reconciles every supported target, and verifies readable native activation after apply.
+- **Honest cross-client outcomes.** Every plugin-target pair reports exactly `native`, `adapted`, `partial`, `blocked`, or `unsupported`, including mixed adaptation failures and write-only targets such as Cursor.
+- **Durable, secure plugin packages.** Content-addressed storage, stable source-tree snapshots, atomic materialization, and tamper checks keep synchronized plugins independent of mutable client caches.
+
+### Changed
+- **Plugins are the product.** The CLI, TUI, README, package metadata, and default runtime now expose plugins as the only public object. Skills and MCP remain private adaptation mechanisms rather than competing product surfaces.
+- **Agent Plugins stays canonical.** Syncthis adopts the upstream Agent Plugins model and acts only as its cross-client sync, adaptation, and verification layer; it does not define a competing plugin format or registry.
+- Legacy add, mirror, and lower-layer aliases remain callable for migration but are no longer advertised or run by the default sync workflow.
+
 ## [0.16.0] — 2026-08-02
 
 ### Added

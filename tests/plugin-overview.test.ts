@@ -32,8 +32,8 @@ function codexTable(rows: CodexRow[]): string {
   return ["Marketplace `mkt`", "/x/marketplace.json", "", fmt(header), ...rows.map(fmt), ""].join("\n");
 }
 
-// Install fake claude + codex + npx, plus a known_marketplaces.json with an
-// on-disk skill so resolvePluginDerivedSkills picks it up.
+// Install fake native CLIs + npx. The npx stub is retained for the
+// independent skills bridge tests below.
 async function installFakes(opts: { claudeJson: string; codexList: string; skillsListJson?: string; skillsListFail?: boolean }) {
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
@@ -57,6 +57,13 @@ exit 0
   await writeFile(join(binDir, "codex"), codex);
   await chmod(join(binDir, "codex"), 0o755);
 
+  const copilot = `#!/bin/sh
+if [ "$1 $2 $3" = "plugin list" ]; then echo "No plugins installed"; exit 0; fi
+exit 0
+`;
+  await writeFile(join(binDir, "copilot"), copilot);
+  await chmod(join(binDir, "copilot"), 0o755);
+
   const npx = `#!/bin/sh
 if [ "$2 $3" = "skills list" ]; then ${opts.skillsListFail ? "exit 1" : `echo '${opts.skillsListJson ?? "[]"}'; exit 0`}; fi
 exit 0
@@ -65,18 +72,6 @@ exit 0
   await chmod(join(binDir, "npx"), 0o755);
 
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
-}
-
-async function writeMarketplaceWithSkill(repo: string, marketplace: string, skill: string) {
-  const loc = join(workDir, "mp", marketplace);
-  await mkdir(join(loc, "skills", skill), { recursive: true });
-  await writeFile(join(loc, "skills", skill, "SKILL.md"), `---\nname: ${skill}\n---\n`);
-  const dir = join(workDir, ".claude", "plugins");
-  await mkdir(dir, { recursive: true });
-  await writeFile(
-    join(dir, "known_marketplaces.json"),
-    JSON.stringify({ [marketplace]: { source: { source: "github", repo }, installLocation: loc } }),
-  );
 }
 
 describe("skillAgentLabelToId", () => {
@@ -110,64 +105,30 @@ describe("listInstalledSkills", () => {
 });
 
 describe("buildPluginOverview", () => {
-  test("combines native plugins + per-agent plugin-derived skills", async () => {
+  test("returns native plugin reads only", async () => {
     await installFakes({
       claudeJson: JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: "/x/foo" }]),
       codexList: codexTable([["bar@mkt", "installed, enabled", "1.0.0", "/c/bar"]]),
-      skillsListJson: '[{"name":"alpha","agents":["OpenCode","Gemini CLI","Kimi Code CLI"]}]',
+      // A loose copy must not become installed plugin state, even when it shares a name.
+      skillsListJson: '[{"name":"foo","agents":["OpenCode"]},{"name":"loose-copy","agents":["Gemini CLI"]}]',
     });
-    await writeMarketplaceWithSkill("owner/foo", "mkt", "alpha");
 
     const o = await buildPluginOverview();
-    expect(o.skillsReadable).toBe(true);
-    // native
+    expect(Object.keys(o)).toEqual(["native"]);
     expect(o.native.find((r) => r.agent === "claude-code")?.plugins.map((p) => p.name)).toEqual(["foo"]);
     expect(o.native.find((r) => r.agent === "codex")?.plugins.map((p) => p.name)).toEqual(["bar"]);
-    // derived: alpha is a plugin-derived skill present on opencode + gemini-cli
-    expect(o.derivedRepos).toEqual(["owner/foo"]);
-    const opencode = o.derived.find((d) => d.agent === "opencode");
-    expect(opencode?.skills.map((s) => s.name)).toEqual(["alpha"]);
-    expect(opencode?.skills[0]?.repo).toBe("owner/foo");
-    const gemini = o.derived.find((d) => d.agent === "gemini-cli");
-    expect(gemini?.skills.map((s) => s.name)).toEqual(["alpha"]);
-    const kimi = o.derived.find((d) => d.agent === "kimi-cli");
-    expect(kimi?.skills.map((s) => s.name)).toEqual(["alpha"]);
+    expect(JSON.stringify(o)).not.toContain("loose-copy");
   });
 
-  // Regression (Claude review P3): the overview must match derived skills by the same
-  // name+slug identity the removal path uses, so a skill whose frontmatter name differs
-  // from its install slug is still shown (not under-reported as 0).
-  test("matches a derived skill by install slug when it differs from the frontmatter name", async () => {
-    const loc = join(workDir, "mp", "mkt");
-    await mkdir(join(loc, "skills", "convex-best-practices"), { recursive: true });
-    await writeFile(join(loc, "skills", "convex-best-practices", "SKILL.md"), "---\nname: Convex Best Practices\n---\n");
-    const dir = join(workDir, ".claude", "plugins");
-    await mkdir(dir, { recursive: true });
-    await writeFile(
-      join(dir, "known_marketplaces.json"),
-      JSON.stringify({ mkt: { source: { source: "github", repo: "owner/foo" }, installLocation: loc } }),
-    );
-    await installFakes({
-      claudeJson: JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: loc }]),
-      codexList: codexTable([]),
-      // `skills list` reports the SLUG, not the spaced frontmatter name.
-      skillsListJson: '[{"name":"convex-best-practices","agents":["OpenCode"]}]',
-    });
-    const o = await buildPluginOverview();
-    const opencode = o.derived.find((d) => d.agent === "opencode");
-    expect(opencode?.skills.map((s) => s.name)).toEqual(["convex-best-practices"]);
-  });
-
-  test("skillsReadable false leaves derived blank but still lists native plugins", async () => {
+  test("does not depend on loose-resource inventory availability", async () => {
     await installFakes({
       claudeJson: JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: "/x/foo" }]),
       codexList: codexTable([]),
       skillsListFail: true,
     });
-    await writeMarketplaceWithSkill("owner/foo", "mkt", "alpha");
+
     const o = await buildPluginOverview();
-    expect(o.skillsReadable).toBe(false);
+    expect(Object.keys(o)).toEqual(["native"]);
     expect(o.native.find((r) => r.agent === "claude-code")?.plugins.map((p) => p.name)).toEqual(["foo"]);
-    expect(o.derived.every((d) => d.skills.length === 0)).toBe(true);
   });
 });

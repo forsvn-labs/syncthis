@@ -19,6 +19,8 @@ import type {
   PluginRecord,
 } from "./types.ts";
 import type { ArtifactKey } from "./artifact-key.ts";
+import { materializePluginPackage } from "./store.ts";
+import { nativeOutcome, type PluginOutcome } from "./outcome.ts";
 
 export type PluginSupport =
   | { status: "supported" }
@@ -88,6 +90,8 @@ export type PluginReconcileResult = {
   message?: string;
   installResult?: PluginInstallResult | WriteOnlyPluginInstallResult;
   degradation: PluginDegradationDecision;
+  /** Canonical product outcome; detailed status remains available above. */
+  outcome?: PluginOutcome;
 };
 
 export type PluginReconcileReport = {
@@ -114,6 +118,8 @@ export type RunPluginReconcileOptions = {
    * from that registry become explicit mode "none" targets.
    */
   targetAgents?: AgentId[];
+  /** Caller-owned content-addressed package store for apply-time local sources. */
+  storeRoot?: string;
 };
 
 const NO_DEGRADATION: PluginDegradationDecision = {
@@ -121,6 +127,30 @@ const NO_DEGRADATION: PluginDegradationDecision = {
   skills: false,
   mcp: false,
 };
+
+type MaterializationCache = Map<string, Promise<string>>;
+
+function materializationCacheKey(sourcePluginPath: string, storeRoot: string, dryRun: boolean): string {
+  return `${storeRoot}\0${sourcePluginPath}\0${dryRun ? "preview" : "apply"}`;
+}
+
+function materializedSourcePath(
+  sourcePluginPath: string,
+  storeRoot: string,
+  dryRun: boolean,
+  cache: MaterializationCache,
+): Promise<string> {
+  const key = materializationCacheKey(sourcePluginPath, storeRoot, dryRun);
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const pending = materializePluginPackage({
+    sourcePluginPath,
+    storeRoot,
+    dryRun,
+  }).then((result) => result.root);
+  cache.set(key, pending);
+  return pending;
+}
 
 function degradation(
   artifact: PluginInventoryArtifact,
@@ -248,6 +278,8 @@ async function reconcileVerified(
   target: VerifiedPluginTarget,
   before: PluginAdapterRead,
   dryRun: boolean,
+  storeRoot: string | undefined,
+  materializationCache: MaterializationCache,
 ): Promise<PluginReconcileResult> {
   const base = baseResult(artifact, target);
   if (before.error) return readFailure(artifact, target, before);
@@ -302,13 +334,36 @@ async function reconcileVerified(
     };
   }
 
+  let installOptions = plan.installOptions;
+  if (storeRoot && plan.source.localPlugin) {
+    try {
+      const managedRoot = await materializedSourcePath(
+        plan.source.localPlugin,
+        storeRoot,
+        dryRun,
+        materializationCache,
+      );
+      // A dry-run validates the real store destination but does not expose a
+      // not-yet-created managed path to a native preview adapter. Apply uses the
+      // immutable managed root, making the source client unnecessary afterward.
+      if (!dryRun) installOptions = { ...installOptions, sourcePluginPath: managedRoot };
+    } catch (err) {
+      return {
+        ...base,
+        status: "failed",
+        message: `cannot materialize local plugin package: ${err instanceof Error ? err.message : String(err)}`,
+        degradation: NO_DEGRADATION,
+      };
+    }
+  }
+
   if (dryRun) {
     let preview: PluginInstallResult | undefined;
     if (target.adapter.previewInstallPlugin) {
       try {
         preview = await target.adapter.previewInstallPlugin(
           plan.requestedName,
-          plan.installOptions,
+          installOptions,
         );
       } catch (err) {
         return {
@@ -350,7 +405,7 @@ async function reconcileVerified(
   try {
     installResult = await target.adapter.installPlugin(
       plan.requestedName,
-      plan.installOptions,
+      installOptions,
     );
   } catch (err) {
     return {
@@ -452,6 +507,8 @@ async function reconcileWriteOnly(
   artifact: PluginInventoryArtifact,
   target: WriteOnlyPluginTarget,
   dryRun: boolean,
+  storeRoot: string | undefined,
+  materializationCache: MaterializationCache,
 ): Promise<PluginReconcileResult> {
   const base = baseResult(artifact, target);
   const plan = await planArtifactLifecycle({
@@ -500,6 +557,26 @@ async function reconcileWriteOnly(
     };
   }
 
+  let sourcePluginPath = plan.source.localPlugin;
+  if (storeRoot && sourcePluginPath) {
+    try {
+      const managedRoot = await materializedSourcePath(
+        sourcePluginPath,
+        storeRoot,
+        dryRun,
+        materializationCache,
+      );
+      if (!dryRun) sourcePluginPath = managedRoot as typeof sourcePluginPath;
+    } catch (err) {
+      return {
+        ...base,
+        status: "failed",
+        message: `cannot materialize local plugin package: ${err instanceof Error ? err.message : String(err)}`,
+        degradation: NO_DEGRADATION,
+      };
+    }
+  }
+
   if (dryRun) {
     return {
       ...base,
@@ -515,7 +592,7 @@ async function reconcileWriteOnly(
       {
         ...artifact,
         sourceRepo: plan.source.repository,
-        sourcePluginPath: plan.source.localPlugin,
+        sourcePluginPath,
         marketplaceRoot: plan.source.localMarketplace,
       },
       { dryRun: false },
@@ -551,6 +628,8 @@ async function reconcileOne(
   target: PluginReconcileTarget,
   reads: Map<AgentId, PluginAdapterRead>,
   dryRun: boolean,
+  storeRoot: string | undefined,
+  materializationCache: MaterializationCache,
 ): Promise<PluginReconcileResult> {
   if (target.mode === "none") {
     return {
@@ -559,7 +638,15 @@ async function reconcileOne(
       degradation: degradation(artifact, "no-native-abi"),
     };
   }
-  if (target.mode === "write-only") return reconcileWriteOnly(artifact, target, dryRun);
+  if (target.mode === "write-only") {
+    return reconcileWriteOnly(
+      artifact,
+      target,
+      dryRun,
+      storeRoot,
+      materializationCache,
+    );
+  }
   const read = reads.get(target.agent);
   if (!read) {
     return {
@@ -569,7 +656,14 @@ async function reconcileOne(
       degradation: NO_DEGRADATION,
     };
   }
-  return reconcileVerified(artifact, target, read, dryRun);
+  return reconcileVerified(
+    artifact,
+    target,
+    read,
+    dryRun,
+    storeRoot,
+    materializationCache,
+  );
 }
 
 /**
@@ -591,19 +685,34 @@ export async function runPluginReconcile(
 
   // Serialize per target. Several native installers share marketplace/config
   // state, and each verification snapshot becomes the next artifact's baseline.
+  // The cache is run-scoped: one verified package snapshot is reused across all
+  // target projections while deterministic store collision checks still happen
+  // inside the first materialization.
+  const materializationCache: MaterializationCache = new Map();
   const results: PluginReconcileResult[] = [];
   for (const target of targets) {
     for (const artifact of artifacts) {
-      const result = await reconcileOne(artifact, target, reads, options.dryRun);
+      const result = await reconcileOne(
+        artifact,
+        target,
+        reads,
+        options.dryRun,
+        options.storeRoot,
+        materializationCache,
+      );
       results.push(result);
     }
   }
 
-  const failures = results.filter((result) => result.status === "failed");
+  const canonicalResults = results.map((result) => ({
+    ...result,
+    outcome: nativeOutcome(result),
+  }));
+  const failures = canonicalResults.filter((result) => result.status === "failed");
   return {
     dryRun: options.dryRun,
     inventory,
-    results,
+    results: canonicalResults,
     failures,
     hasFailures: inventory.errors.length > 0 || failures.length > 0,
     hasChanges: results.some(

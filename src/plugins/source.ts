@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join, relative } from "node:path";
+import { basename } from "node:path";
+import { walkSecureTree } from "./secure-tree.ts";
 
 const NATIVE_MANIFEST_DIRS = new Set([
   ".codex-plugin",
@@ -9,7 +9,29 @@ const NATIVE_MANIFEST_DIRS = new Set([
   ".cursor-plugin",
 ]);
 const SKIP_DIRS = new Set([".git", "node_modules"]);
-const MAX_DEPTH = 10;
+export const SYNCTHIS_MARKER = ".syncthis-managed.json";
+
+type PackageFile = {
+  relativePath: string;
+  bytes: Buffer;
+  mode: number;
+};
+
+type PluginSourceSnapshot = {
+  files: PackageFile[];
+  directories: Set<string>;
+};
+
+export type PluginPackageIdentity = {
+  fingerprint: string;
+  pluginJsonPath: string;
+  pluginName: string;
+};
+
+export type PluginPackage = {
+  identity: PluginPackageIdentity;
+  files: PackageFile[];
+};
 
 export type PluginSourceInspection = {
   canonicalName?: string;
@@ -47,56 +69,61 @@ function manifestDeclaresMcp(raw: unknown): boolean {
   return false;
 }
 
-async function walkFiles(
-  root: string,
-  current: string,
-  depth: number,
-  out: string[],
-): Promise<void> {
-  if (depth > MAX_DEPTH) return;
-  let entries: import("node:fs").Dirent[];
-  try {
-    entries = await readdir(current, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  entries.sort((a, b) => a.name.localeCompare(b.name));
-  for (const entry of entries) {
-    const path = join(current, entry.name);
-    if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) await walkFiles(root, path, depth + 1, out);
-    } else if (entry.isFile()) {
-      out.push(relative(root, path));
-    }
-  }
-}
-
-export async function findNativePluginManifests(root: string): Promise<string[]> {
-  const files: string[] = [];
-  await walkFiles(root, root, 0, files);
-  return files
-    .filter((rel) => {
-      const parts = rel.split(/[\\/]/);
-      if (parts.length === 1) return parts[0] === "plugin.json";
-      return parts.at(-1) === "plugin.json" && NATIVE_MANIFEST_DIRS.has(parts.at(-2) ?? "");
-    })
-    .sort((a, b) => {
-      const rootPriority = (path: string): number => {
-        if (path === ".codex-plugin/plugin.json") return 0;
-        if (path === ".claude-plugin/plugin.json") return 1;
-        if (path === ".plugin/plugin.json") return 2;
-        if (path === ".cursor-plugin/plugin.json") return 3;
-        if (path === "plugin.json") return 4;
-        return 5;
-      };
-      return rootPriority(a) - rootPriority(b) || a.localeCompare(b);
-    });
-}
-
 function isNativeManifestPath(rel: string): boolean {
   const parts = rel.split(/[\\/]/);
   if (parts.length === 1) return parts[0] === "plugin.json";
   return parts.at(-1) === "plugin.json" && NATIVE_MANIFEST_DIRS.has(parts.at(-2) ?? "");
+}
+
+function nativeManifestPathPriority(path: string): number {
+  if (path === ".codex-plugin/plugin.json") return 0;
+  if (path === ".claude-plugin/plugin.json") return 1;
+  if (path === ".plugin/plugin.json") return 2;
+  if (path === ".cursor-plugin/plugin.json") return 3;
+  if (path === "plugin.json") return 4;
+  return 5;
+}
+
+function compareNativeManifestPaths(left: string, right: string): number {
+  return nativeManifestPathPriority(left) - nativeManifestPathPriority(right) || left.localeCompare(right);
+}
+
+/**
+ * Take one stable, no-follow snapshot of a plugin tree. The old source reader
+ * used lstat for discovery and ordinary readFile for content, which allowed an
+ * entry to be replaced between those operations. All source inspection and
+ * content-addressing now share this hardened traversal.
+ */
+async function snapshotPluginSource(root: string): Promise<PluginSourceSnapshot> {
+  const files: PackageFile[] = [];
+  const directories = new Set<string>();
+  await walkSecureTree(
+    root,
+    "plugin package",
+    {
+      allowContainedSymlinks: true,
+      skipDirectoryNames: SKIP_DIRS,
+      ignoredPaths: new Set([SYNCTHIS_MARKER]),
+    },
+    {
+      async directory(rel) {
+        if (rel) directories.add(rel);
+      },
+      async file(relativePath, bytes, mode) {
+        files.push({ relativePath, bytes, mode });
+      },
+    },
+  );
+  files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  return { files, directories };
+}
+
+export async function findNativePluginManifests(root: string): Promise<string[]> {
+  const snapshot = await snapshotPluginSource(root);
+  return snapshot.files
+    .map((file) => file.relativePath)
+    .filter(isNativeManifestPath)
+    .sort(compareNativeManifestPaths);
 }
 
 function canonicalJson(value: unknown): string {
@@ -110,46 +137,94 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-async function pathIsFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch {
-    return false;
-  }
+function packageManifestPaths(files: PackageFile[]): string[] {
+  return files
+    .map((file) => file.relativePath)
+    .filter(isNativeManifestPath)
+    .sort(compareNativeManifestPaths);
 }
 
-async function pathIsDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
+async function collectPackageFiles(root: string): Promise<PackageFile[]> {
+  return (await snapshotPluginSource(root)).files;
 }
 
-async function skillsFingerprint(root: string): Promise<string | undefined> {
-  const files: string[] = [];
-  await walkFiles(root, root, 0, files);
+function packageFingerprint(files: PackageFile[]): string {
+  const hash = createHash("sha256");
+  for (const file of [...files].sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    hash.update(file.relativePath);
+    hash.update("\0");
+    hash.update((file.mode & 0o111) !== 0 ? "1" : "0");
+    hash.update("\0");
+    hash.update(String(file.bytes.byteLength));
+    hash.update("\0");
+    hash.update(file.bytes);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+export async function readPluginPackage(root: string): Promise<PluginPackage> {
+  const files = await collectPackageFiles(root);
+  const manifests = packageManifestPaths(files);
+  const pluginJsonPath = manifests[0];
+  if (!pluginJsonPath) {
+    throw new Error(`plugin package requires plugin.json metadata: ${root}`);
+  }
+
+  let pluginName: unknown;
+  try {
+    const manifest = JSON.parse(
+      (files.find((file) => file.relativePath === pluginJsonPath)?.bytes ?? Buffer.from(""))
+        .toString("utf8"),
+    ) as { name?: unknown };
+    pluginName = manifest.name;
+  } catch (err) {
+    throw new Error(
+      `plugin package plugin.json is not readable: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (typeof pluginName !== "string" || !pluginName.trim()) {
+    throw new Error(`plugin package plugin.json requires a non-empty name: ${pluginJsonPath}`);
+  }
+
+  return {
+    files,
+    identity: {
+      fingerprint: packageFingerprint(files),
+      pluginJsonPath,
+      pluginName,
+    },
+  };
+}
+
+export async function identifyPluginPackage(root: string): Promise<PluginPackageIdentity> {
+  return (await readPluginPackage(root)).identity;
+}
+
+export async function hashPluginPackage(root: string): Promise<string> {
+  return (await identifyPluginPackage(root)).fingerprint;
+}
+
+// Descriptive aliases for callers that only need the content-address identity.
+export const fingerprintPluginPackage = hashPluginPackage;
+export const pluginPackageIdentity = identifyPluginPackage;
+
+function skillsFingerprint(files: PackageFile[]): string | undefined {
   const relevant = files.filter(
-    (rel) =>
-      rel === "SKILL.md" ||
-      rel.startsWith(`skills/`) ||
-      rel === ".mcp.json" ||
-      isNativeManifestPath(rel),
+    (file) =>
+      file.relativePath === "SKILL.md" ||
+      file.relativePath.startsWith("skills/") ||
+      file.relativePath === ".mcp.json" ||
+      isNativeManifestPath(file.relativePath),
   );
   if (relevant.length === 0) return undefined;
 
   const hash = createHash("sha256");
   const seenManifests = new Set<string>();
-  for (const rel of relevant.sort()) {
-    let content: Buffer;
-    try {
-      content = await readFile(join(root, rel));
-    } catch {
-      return undefined;
-    }
-    if (isNativeManifestPath(rel)) {
+  for (const file of [...relevant].sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    if (isNativeManifestPath(file.relativePath)) {
       try {
-        const canonical = canonicalJson(JSON.parse(content.toString("utf8")));
+        const canonical = canonicalJson(JSON.parse(file.bytes.toString("utf8")));
         // A managed marketplace adds a target-native manifest alongside the
         // source manifest. Identical semantic manifests describe one artifact,
         // regardless of wrapper path or formatting, and must not split inventory
@@ -166,9 +241,9 @@ async function skillsFingerprint(root: string): Promise<string | undefined> {
         // them as authoritative native manifests.
       }
     }
-    hash.update(rel);
+    hash.update(file.relativePath);
     hash.update("\0");
-    hash.update(content);
+    hash.update(file.bytes);
     hash.update("\0");
   }
   return hash.digest("hex");
@@ -180,14 +255,20 @@ function versionFromRoot(root: string): string | undefined {
 }
 
 export async function inspectPluginSource(root: string): Promise<PluginSourceInspection> {
-  const manifests = await findNativePluginManifests(root);
+  const snapshot = await snapshotPluginSource(root);
+  const manifests = snapshot.files
+    .map((file) => file.relativePath)
+    .filter(isNativeManifestPath)
+    .sort(compareNativeManifestPaths);
   let canonicalName: string | undefined;
   let sourceRepo: string | undefined;
   let manifestMcp = false;
 
   for (const rel of manifests) {
     try {
-      const raw = JSON.parse(await readFile(join(root, rel), "utf8")) as {
+      const raw = JSON.parse(
+        snapshot.files.find((file) => file.relativePath === rel)!.bytes.toString("utf8"),
+      ) as {
         name?: unknown;
         repository?: unknown;
       };
@@ -199,24 +280,30 @@ export async function inspectPluginSource(root: string): Promise<PluginSourceIns
     }
   }
 
+  const filePaths = new Set(snapshot.files.map((file) => file.relativePath));
   return {
     canonicalName,
     sourceRepo,
     sourceVersion: versionFromRoot(root),
-    contentFingerprint: await skillsFingerprint(root),
+    // Keep the narrower inventory fingerprint stable for wrapper paths that
+    // rewrite the native manifest location. Full package identity is exposed
+    // separately by identifyPluginPackage/hashPluginPackage and owns the store.
+    contentFingerprint: skillsFingerprint(snapshot.files),
     manifests,
     payload: {
       nativeManifest: manifests.length > 0,
       skills:
-        (await pathIsFile(join(root, "SKILL.md"))) ||
-        (await pathIsDirectory(join(root, "skills"))),
-      mcp: manifestMcp || (await pathIsFile(join(root, ".mcp.json"))),
+        filePaths.has("SKILL.md") ||
+        snapshot.directories.has("skills") ||
+        [...filePaths].some((path) => path.startsWith("skills/")),
+      mcp: manifestMcp || filePaths.has(".mcp.json"),
     },
   };
 }
 
 export async function hasSkillManifest(root: string): Promise<boolean> {
-  const files: string[] = [];
-  await walkFiles(root, root, 0, files);
-  return files.some((rel) => rel === "SKILL.md" || rel.endsWith("/SKILL.md"));
+  const snapshot = await snapshotPluginSource(root);
+  return snapshot.files.some(
+    (file) => file.relativePath === "SKILL.md" || file.relativePath.endsWith("/SKILL.md"),
+  );
 }
