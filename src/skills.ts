@@ -12,13 +12,13 @@ import type { AgentId } from "./types.ts";
 // a conditional fallback: add/mirror removes a plugin/repo only after that exact
 // native install succeeds. Kimi has no proven non-interactive native plugin ABI and
 // therefore remains an unconditional exact skills/MCP degradation target.
-export const PLUGIN_TARGET_AGENTS: readonly AgentId[] = ["claude-code", "codex", "cursor"];
+export const PLUGIN_TARGET_AGENTS: readonly AgentId[] = ["claude-code", "codex", "cursor", "grok-build"];
 
 // Agents that support skills (vercel-labs/skills) but have NO native MCP config to
 // sync, so they get no MCP adapter — they appear in the SKILL cohort only, never in
-// MCP sync or the plugin→MCP decomposition. Pi (badlogic/pi-mono) and Cline ship
-// without native MCP here; both consume the universal ~/.agents/skills store.
-export const SKILL_ONLY_AGENTS: readonly AgentId[] = ["pi", "cline"];
+// MCP sync or the plugin→MCP decomposition. Pi, Cline, and Prime Agent ship
+// without an Agent Plugin ABI here; all consume the universal ~/.agents/skills store.
+export const SKILL_ONLY_AGENTS: readonly AgentId[] = ["pi", "cline", "prime-agent"];
 
 // The MCP cohort: every MCP-syncable agent that is NOT plugin-capable. These are the
 // targets for the plugin→MCP decomposition (the plugin cohort gets a plugin's MCP
@@ -30,7 +30,7 @@ export function mcpCohort(): AgentId[] {
 
 // The skill cohort: every non-plugin agent that can receive skills via
 // `npx skills add -a <agent>`. That's the MCP cohort plus skills-only agents (Pi,
-// Cline), since skills reach more agents than native MCP sync does.
+// Cline, Prime Agent), since skills reach more agents than native MCP sync does.
 export function skillCohort(): AgentId[] {
   return [...new Set([...mcpCohort(), ...SKILL_ONLY_AGENTS])];
 }
@@ -190,6 +190,8 @@ const SKILL_AGENT_LABELS: Record<string, AgentId> = {
   pi: "pi",
   cline: "cline",
   "cline cli": "cline",
+  "prime agent": "prime-agent",
+  prime: "prime-agent",
 };
 
 export function skillAgentLabelToId(label: string): AgentId | undefined {
@@ -204,6 +206,7 @@ const SKILL_AGENT_CLI_IDS: Partial<Record<AgentId, string>> = {
   "kimi-cli": "kimi-code-cli",
   pi: "universal",
   cline: "universal",
+  "prime-agent": "universal",
 };
 
 export function skillAgentIdToCliId(agent: AgentId): string {

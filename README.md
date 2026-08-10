@@ -38,7 +38,7 @@ syncthis help
 
 ## How sync works
 
-1. **Discover.** The default sync reads installed plugin records from Claude Code, Codex, and GitHub Copilot when their native registries are readable. A failed source read is reported as `blocked`; an empty source is not silently treated as proof that no plugins exist.
+1. **Discover.** The default sync reads installed plugin records from Claude Code, Codex, GitHub Copilot, and Grok Build when their native registries are readable. A failed source read is reported as `blocked`; an empty source is not silently treated as proof that no plugins exist.
 2. **Package.** A discovered plugin is materialized into syncthis's managed, source-independent package store. Target installs therefore do not depend on a source client's mutable cache or on a guessed marketplace name.
 3. **Reconcile.** Targets with a proven native plugin ABI receive the plugin through their own installer. Targets without one receive the safest supported adaptation when the package can be represented there. Existing conflicting state is left untouched.
 4. **Verify.** Every readable native target is read again after apply. An installer exit code alone is never proof of native activation. Cursor is write-only, so a successful push is reported as an adaptation rather than native activation.
@@ -63,6 +63,7 @@ The detailed report never upgrades unresolved work into a success. Conflicts, om
 | Claude Code | Yes | native |
 | Codex | Yes | native |
 | GitHub Copilot | Yes | native |
+| Grok Build | Yes | native |
 | Cursor | No | adapted |
 | OpenCode | No | adapted |
 | Hermes Agent | No | adapted |
@@ -74,8 +75,11 @@ The detailed report never upgrades unresolved work into a success. Conflicts, om
 | Goose | No | adapted |
 | Pi | No | adapted |
 | Cline | No | adapted |
+| Prime Agent | No | adapted |
 
 The matrix describes the normal capability path, not a guarantee that every plugin artifact is portable. A particular target can honestly report `partial`, `blocked`, or `unsupported` instead.
+
+Grok Build accepts Agent Plugins through its native `grok plugin` lifecycle, including trusted installation, activation, listing, and removal. Prime Agent, Pi, and Cline receive private capability-preserving adaptations; Cline's separate TypeScript plugin ABI is not treated as Agent Plugins-native, so syncthis does not generate or claim a native Cline wrapper.
 
 ## Safety
 
@@ -84,7 +88,7 @@ The matrix describes the normal capability path, not a guarantee that every plug
 - `--dry-run` never writes.
 - `--all` and `--agents` are mutually exclusive.
 - Readable native installs require fresh read-back verification.
-- `--keep-data` is opt-in and only affects supported Claude uninstall paths.
+- `--keep-data` is opt-in and only affects native uninstall paths that support it (currently Claude Code and Grok Build).
 
 Private target adaptations may use bundled implementation components behind the boundary, but those components are not public products, installed-plugin records, or public statuses.
 

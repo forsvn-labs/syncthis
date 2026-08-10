@@ -63,7 +63,7 @@ src/skills.ts                internal projection mechanism; not a public product
 src/adapters/                internal lower-layer config adapters, including private projections
 ```
 
-Readable native plugin sources are Claude Code, Codex, and GitHub Copilot. Cursor is a write-only target and must never be reported as native. Targets without a proven native ABI may receive private adaptations when the exact artifact supports them.
+Readable native plugin sources are Claude Code, Codex, GitHub Copilot, and Grok Build. Cursor is a write-only target and must never be reported as native. Prime Agent, Pi, and Cline are skill-backed adaptation targets; Cline's separate TypeScript plugin ABI is not Agent Plugins-native. Targets without a proven native ABI may receive private adaptations when the exact artifact supports them.
 
 `plugins add`, `plugins mirror`, and top-level `add`, `mirror`, and `run` remain callable compatibility paths, but are not advertised or used by the default workflow. Do not expand them as part of the plugin-first core. The default interactive Plugin Sync must call the same `runSync({ dryRun })` preview/apply contract as the CLI and must not add source/plugin/target selection or call `runPluginAdd`.
 

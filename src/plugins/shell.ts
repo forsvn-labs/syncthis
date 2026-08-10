@@ -13,6 +13,7 @@ export type ShellResult = {
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const TIMEOUT_KILL_GRACE_MS = 250;
 
 // Run a subprocess with no shell (args are passed array-style, so a value can
 // never be re-interpreted as a flag or shell metacharacter) on plain Node's
@@ -24,23 +25,45 @@ export function run(cmd: string, args: string[], opts: { timeoutMs?: number } = 
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
     const child = spawn(cmd, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-
     const finish = (r: ShellResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       resolve(r);
     };
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+
+      // A subprocess can trap SIGTERM and keep both its process and stdio open.
+      // Bound that grace period, then force termination and settle even if the
+      // runtime never emits `close` after the kill request.
+      forceKillTimer = setTimeout(() => {
+        if (settled) return;
+        child.kill("SIGKILL");
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish({
+          ok: false,
+          exitCode: -1,
+          stdout,
+          stderr: stderr || "killed after timeout (SIGKILL)",
+          cmd: display,
+          notFound: false,
+          timedOut: true,
+        });
+      }, TIMEOUT_KILL_GRACE_MS);
+    }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");

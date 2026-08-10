@@ -21,6 +21,11 @@ beforeEach(async () => {
   await mkdir(join(workDir, "bin"), { recursive: true });
   await writeFile(join(workDir, "bin", "copilot"), `#!/bin/sh\necho "copilot $@" >> ${join(workDir, "invocations.log")}\necho "native install unavailable in fixture" >&2\nexit 1\n`);
   await chmod(join(workDir, "bin", "copilot"), 0o755);
+  await writeFile(
+    join(workDir, "bin", "grok"),
+    "#!/bin/sh\nif [ \"$1 $2 $3\" = \"plugin list --json\" ]; then echo '[]'; exit 0; fi\nexit 1\n",
+  );
+  await chmod(join(workDir, "bin", "grok"), 0o755);
   process.env.PATH = `${join(workDir, "bin")}:${originalPath ?? ""}`;
 });
 

@@ -56,6 +56,7 @@ describe("lower-layer composition boundaries", () => {
       ["claude-code", "verified"],
       ["codex", "verified"],
       ["github-copilot", "verified"],
+      ["grok-build", "verified"],
       ["cursor", "write-only"],
       ["gemini-cli", "none"],
       ["kimi-cli", "none"],
@@ -67,6 +68,7 @@ describe("lower-layer composition boundaries", () => {
       ["goose", "none"],
       ["pi", "none"],
       ["cline", "none"],
+      ["prime-agent", "none"],
     ]);
   });
 

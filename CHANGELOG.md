@@ -2,6 +2,20 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.18.0] — 2026-08-10
+
+### Added
+- **Grok Build native plugin sync.** Grok joins the readable native registry through its official plugin CLI: exact Agent Plugin installation with explicit trust, activation, JSON read-back verification, and guarded uninstall.
+- **Prime Agent adaptation.** Prime Agent receives compatible plugin skills through the universal `~/.agents/skills` store used by its native skill discovery.
+
+### Clarified
+- **Cline remains an honest adaptation.** Cline's TypeScript plugin ABI is distinct from Agent Plugins, so syncthis surfaces compatible skills without generating a wrapper or claiming native activation.
+
+### Fixed
+- **Grok lifecycle verification fails closed.** Syncthis verifies exact source identity, positive activation, repository containment, and post-operation native state before reporting success.
+- **Grok removal preserves unrelated plugins.** Ambiguous marketplace removals and single-plugin removals from multi-plugin repositories are refused instead of allowing Grok's repository-wide uninstall to remove more than requested.
+- **Plugin subprocess timeouts terminate reliably.** Commands that ignore `SIGTERM` are force-killed after a bounded grace period so synchronization cannot hang indefinitely.
+
 ## [0.17.0] — 2026-08-10
 
 ### Added

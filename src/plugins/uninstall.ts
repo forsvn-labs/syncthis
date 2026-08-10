@@ -18,6 +18,7 @@ import type { PluginAdapterRead, PluginUninstallResult } from "./types.ts";
 import { readPluginInventory } from "./inventory.ts";
 import {
   artifactMatchesRequest,
+  installedArtifactRecords,
   planArtifactLifecycle,
   type ArtifactPlan,
 } from "./lifecycle.ts";
@@ -232,26 +233,19 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
   for (const adapter of pluginAdapters) {
     if (!requested.includes(adapter.id)) continue;
     const read = readsByAgent.get(adapter.id)!;
-    const targetPlans = await Promise.all(selectedArtifacts.map((artifact) =>
-      planArtifactLifecycle({
-        artifact,
-        agent: adapter.id,
-        mode: "verified",
-        targetRead: read,
-        sourceRequired: false,
-        provision: false,
-        dryRun: !opts.apply,
-      })
-    ));
+    const installedByArtifact = selectedArtifacts.map((artifact) => ({
+      artifact,
+      records: installedArtifactRecords(read, artifact, adapter.id),
+    }));
     for (const spec of specs) {
       if (read.error) {
         native.push({ agent: adapter.id, plugin: spec.name, marketplace: spec.marketplace, present: false, unreadable: read.error });
         continue;
       }
       const matches = new Map<string, PluginAdapterRead["plugins"][number]>();
-      for (const plan of targetPlans) {
-        if (!artifactMatchesRequest(plan.artifact, spec)) continue;
-        for (const record of plan.activeRecords) {
+      for (const { artifact, records } of installedByArtifact) {
+        if (!artifactMatchesRequest(artifact, spec)) continue;
+        for (const record of records) {
           const id = record.marketplace
             ? `${record.name}@${record.marketplace}`
             : record.name;

@@ -459,6 +459,12 @@ enabled = true
       "#!/bin/sh\nif [ \"$1 $2\" = \"plugin list\" ]; then echo 'No plugins installed.'; exit 0; fi\nexit 1\n",
     );
     await chmod(copilot, 0o755);
+    const grok = join(fakeBin, "grok");
+    await Bun.write(
+      grok,
+      "#!/bin/sh\nif [ \"$1 $2 $3\" = \"plugin list --json\" ]; then echo '[]'; exit 0; fi\nexit 1\n",
+    );
+    await chmod(grok, 0o755);
 
     const bin = join(import.meta.dir, "..", "bin", "syncthis.ts");
     const result = spawnSync(process.execPath, [bin, "sync", "--dry-run"], {

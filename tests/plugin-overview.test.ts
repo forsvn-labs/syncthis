@@ -64,6 +64,13 @@ exit 0
   await writeFile(join(binDir, "copilot"), copilot);
   await chmod(join(binDir, "copilot"), 0o755);
 
+  const grok = `#!/bin/sh
+if [ "$1 $2 $3" = "plugin list --json" ]; then echo '[]'; exit 0; fi
+exit 1
+`;
+  await writeFile(join(binDir, "grok"), grok);
+  await chmod(join(binDir, "grok"), 0o755);
+
   const npx = `#!/bin/sh
 if [ "$2 $3" = "skills list" ]; then ${opts.skillsListFail ? "exit 1" : `echo '${opts.skillsListJson ?? "[]"}'; exit 0`}; fi
 exit 0

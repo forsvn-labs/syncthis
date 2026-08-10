@@ -1,6 +1,6 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
   "type": "module",
   "license": "MIT",
@@ -32,6 +32,9 @@
     "goose",
     "pi",
     "cline",
+    "grok-build",
+    "prime-agent",
+    "agent-plugins",
     "ai-agents",
     "ai-tools",
     "cli"

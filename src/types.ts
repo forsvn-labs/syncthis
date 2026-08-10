@@ -27,10 +27,12 @@ export type AgentId =
   | "openclaw"
   | "hermes-agent"
   | "goose"
+  | "grok-build"
   // Skill-only agents ship WITHOUT native MCP by design, so they have no MCP
   // adapter — they appear only in the skill cohort, never in MCP sync.
   | "pi"
-  | "cline";
+  | "cline"
+  | "prime-agent";
 
 export type SyncStatus = "synced" | "unchanged" | "skipped" | "failed";
 export type DoctorStatus = "ok" | "drift" | "missing" | "invalid";

@@ -94,14 +94,15 @@ describe("mcpCohort / skillCohort", () => {
     expect(cohort.length).toBe(9);
   });
 
-  test("skillCohort = mcpCohort plus skills-only agents (pi, cline)", () => {
+  test("skillCohort = mcpCohort plus skills-only agents (pi, cline, prime)", () => {
     const cohort = skillCohort();
     for (const a of PLUGIN_TARGET_AGENTS) expect(cohort).not.toContain(a);
     expect(cohort).toContain("pi");
     expect(cohort).toContain("cline");
+    expect(cohort).toContain("prime-agent");
     expect(cohort).toContain("goose");
     expect(cohort).toContain("gemini-cli");
-    expect(cohort.length).toBe(11);
+    expect(cohort.length).toBe(12);
   });
 });
 
@@ -116,8 +117,10 @@ describe("addArgs", () => {
     expect(skillAgentIdToCliId("kimi-cli")).toBe("kimi-code-cli");
     expect(skillAgentIdToCliId("pi")).toBe("universal");
     expect(skillAgentIdToCliId("cline")).toBe("universal");
+    expect(skillAgentIdToCliId("prime-agent")).toBe("universal");
     expect(skillAgentLabelToId("Kimi Code CLI")).toBe("kimi-cli");
     expect(skillAgentLabelToId("Cline")).toBe("cline");
+    expect(skillAgentLabelToId("Prime Agent")).toBe("prime-agent");
     expect(skillAgentLabelToId("Antigravity")).toBe("antigravity");
     expect(skillAgentLabelToId("Antigravity CLI")).toBeUndefined();
     expect(addArgs("owner/repo", ["kimi-cli", "opencode"])).toEqual([
@@ -131,14 +134,14 @@ describe("addArgs", () => {
     ]);
   });
 
-  test("dedupes Pi and Cline's shared universal target", () => {
-    expect(addArgs("owner/repo", ["pi", "cline"])).toEqual([
+  test("dedupes Pi, Cline, and Prime Agent's shared universal target", () => {
+    expect(addArgs("owner/repo", ["pi", "cline", "prime-agent"])).toEqual([
       "-y", "skills", "add", "owner/repo", "-g", "-s", "*", "-a", "universal", "-y",
     ]);
-    expect(installedAddArgs("/store/alpha", "alpha", ["pi", "cline"])).toEqual([
+    expect(installedAddArgs("/store/alpha", "alpha", ["pi", "cline", "prime-agent"])).toEqual([
       "-y", "skills", "add", "/store/alpha", "-g", "-s", "alpha", "-a", "universal", "-y",
     ]);
-    expect(removeArgs(["alpha"], ["pi", "cline"])).toEqual([
+    expect(removeArgs(["alpha"], ["pi", "cline", "prime-agent"])).toEqual([
       "-y", "skills", "remove", "-g", "-a", "universal", "-s", "alpha", "-y",
     ]);
   });
@@ -226,7 +229,7 @@ describe("addSkillsFromPlugins", () => {
     expect(r.ran).toBe(true);
     expect(r.dryRun).toBe(true);
     expect(r.results).toEqual([{ repo: "owner/a", status: "added", message: "dry-run" }]);
-    expect(r.agents.length).toBe(11);
+    expect(r.agents.length).toBe(12);
     const inv = await readInvocations();
     expect(inv.some((l) => /skills add/.test(l))).toBe(false);
   });

@@ -39,14 +39,19 @@ The proven readable native sources are:
 - `claude-code`
 - `codex`
 - `github-copilot`
+- `grok-build`
 
-The default sync reads all three sources that are available, merges their installed evidence by artifact identity, and reconciles the resulting plugin set. An empty or failed source read is reported honestly rather than silently treated as an empty source. Each eligible artifact is materialized into a managed, source-independent package store before apply, so target installation does not depend on a mutable client cache. The retained `--from <primary>` form is only a compatibility path for bounded plugin add; it is not the default architecture.
+The default sync reads all four sources that are available, merges their installed evidence by artifact identity, and reconciles the resulting plugin set. An empty or failed source read is reported honestly rather than silently treated as an empty source. Each eligible artifact is materialized into a managed, source-independent package store before apply, so target installation does not depend on a mutable client cache. The retained `--from <primary>` form is only a compatibility path for bounded plugin add; it is not the default architecture.
 
 ## Target-specific ABI
 
 Native support is target-specific. A target enters the verified native registry only after its list, install, uninstall, and post-apply read contracts are proven. The target adapter owns its identifiers, marketplace rules, config path, and fresh read-back semantics.
 
 A target without a proven native ABI may receive a target-specific adaptation when the artifact supports it. That translation is scoped to the exact target and never changes the source plugin's identity or upgrades the target's status to native.
+
+Grok Build belongs in the verified registry because its CLI natively accepts Agent Plugin manifests and exposes list, install, enable, uninstall, and update operations. Syncthis installs an exact local artifact when available, grants trust explicitly as part of the user-requested sync, enables the installed identity, and requires a fresh `grok plugin list --json` read before reporting `native`.
+
+Prime Agent and Pi consume Agent Skills from the shared `~/.agents/skills` store but do not expose an Agent Plugin ABI. Cline exposes a separate TypeScript plugin ABI; that ABI is not interchangeable with Agent Plugins. These targets may therefore report `adapted` only when a plugin's skill payload is successfully surfaced, `partial` when only part of the payload lands, or `unsupported` when no compatible payload exists.
 
 ## Cursor limitation
 

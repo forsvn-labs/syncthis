@@ -95,7 +95,18 @@ export function artifactRecordIsActive(
   artifact: PluginInventoryArtifact,
   agent: AgentId,
 ): boolean {
-  if (record.enabled === false) return false;
+  return record.enabled !== false && artifactRecordMatches(
+    record,
+    artifact,
+    agent,
+  );
+}
+
+function artifactRecordMatches(
+  record: PluginRecord,
+  artifact: PluginInventoryArtifact,
+  agent: AgentId,
+): boolean {
   const targetEvidence = artifact.evidence.find(
     (item) =>
       item.agent === agent &&
@@ -123,6 +134,16 @@ export function activeArtifactRecords(
 ): PluginRecord[] {
   return read?.plugins.filter((record) =>
     artifactRecordIsActive(record, artifact, agent)
+  ) ?? [];
+}
+
+export function installedArtifactRecords(
+  read: PluginAdapterRead | undefined,
+  artifact: PluginInventoryArtifact,
+  agent: AgentId,
+): PluginRecord[] {
+  return read?.plugins.filter((record) =>
+    artifactRecordMatches(record, artifact, agent)
   ) ?? [];
 }
 

@@ -30,6 +30,14 @@ beforeEach(async () => {
   // Goose honors XDG_CONFIG_HOME unconditionally; clear it so the mirror's MCP-cohort
   // write to goose lands under the temp HOME, not the real ~/.config.
   delete process.env.XDG_CONFIG_HOME;
+  const binDir = join(workDir, "bin");
+  await mkdir(binDir, { recursive: true });
+  await writeFile(
+    join(binDir, "grok"),
+    "#!/bin/sh\nif [ \"$1 $2 $3\" = \"plugin list --json\" ]; then echo '[]'; exit 0; fi\nexit 1\n",
+  );
+  await chmod(join(binDir, "grok"), 0o755);
+  process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 });
 
 afterEach(async () => {

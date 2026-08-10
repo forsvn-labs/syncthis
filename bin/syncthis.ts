@@ -277,15 +277,14 @@ async function cmdPluginList() {
 
 async function cmdPluginRemove(argv: string[]) {
   const { runPluginUninstall, uninstallHasChanges } = await import("../src/plugins/uninstall.ts");
-  const { listAgentIds } = await import("../src/adapters/index.ts");
+  const { pluginReconcileTargets } = await import("../src/plugins/targets.ts");
   const { values, positionals } = parse(argv);
   const plugins = positionals;
   if (plugins.length === 0) {
     console.error(red("plugin rm: name at least one plugin to uninstall"));
     process.exit(2);
   }
-  // The full agent universe: MCP-syncable agents + skills-only agents (Pi).
-  const known = [...listAgentIds(), "pi"] as AgentId[];
+  const known = pluginReconcileTargets().map((target) => target.agent);
   const hasAgents = typeof values.agents === "string" && values.agents.trim().length > 0;
   // --all and --agents are mutually exclusive scopes — for a destructive command,
   // silently letting one win could uninstall from unintended agents. Reject both.
@@ -390,7 +389,7 @@ async function cmdAdd(argv: string[]) {
 async function cmdAddPlugin(argv: string[]) {
   const { runPluginAdd, pluginAddHasWork } = await import("../src/plugins/add.ts");
   const { pluginAdapters } = await import("../src/plugins/index.ts");
-  const { listAgentIds } = await import("../src/adapters/index.ts");
+  const { pluginReconcileTargets } = await import("../src/plugins/targets.ts");
   const { values, positionals } = parse(argv);
   const requestedSource = typeof values.from === "string" ? values.from : "claude-code";
   const readableSources = pluginAdapters.map((adapter) => adapter.id);
@@ -408,7 +407,11 @@ async function cmdAddPlugin(argv: string[]) {
     console.error(red("add plugin: name at least one plugin installed on the selected source"));
     process.exit(2);
   }
-  const agents = resolveAgentScope(values, [...listAgentIds(), "pi"] as AgentId[], "add plugin");
+  const agents = resolveAgentScope(
+    values,
+    pluginReconcileTargets().map((target) => target.agent),
+    "add plugin",
+  );
   const dryRun = !!values["dry-run"];
   const preview = await runPluginAdd({ from: source, plugins: positionals, agents, apply: false });
   printPluginAdd(preview, true);

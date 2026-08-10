@@ -10,12 +10,14 @@ import { runPluginUninstall, uninstallHasChanges } from "../src/plugins/uninstal
 let workDir: string;
 let originalHome: string | undefined;
 let originalPath: string | undefined;
+let originalGrokHome: string | undefined;
 let invocationsFile: string;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "syncthis-uninstall-"));
   originalHome = process.env.HOME;
   originalPath = process.env.PATH;
+  originalGrokHome = process.env.GROK_HOME;
   process.env.HOME = workDir;
   invocationsFile = join(workDir, "invocations.log");
 });
@@ -23,6 +25,8 @@ beforeEach(async () => {
 afterEach(async () => {
   process.env.HOME = originalHome;
   process.env.PATH = originalPath;
+  if (originalGrokHome === undefined) delete process.env.GROK_HOME;
+  else process.env.GROK_HOME = originalGrokHome;
   await rm(workDir, { recursive: true, force: true });
 });
 
@@ -93,6 +97,32 @@ if [ "$1 $2" = "plugin remove" ]; then ${opts.removeExit != null ? `echo "${stde
 exit 0
 `;
   const p = join(binDir, "codex");
+  await writeFile(p, script);
+  await chmod(p, 0o755);
+  process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+}
+
+async function installFakeGrok(listJson: string, disabled: string[] = []) {
+  const binDir = join(workDir, "bin");
+  const grokHome = join(workDir, ".grok");
+  await mkdir(binDir, { recursive: true });
+  await mkdir(grokHome, { recursive: true });
+  process.env.GROK_HOME = grokHome;
+  await writeFile(
+    join(grokHome, "config.toml"),
+    `[plugins]\ndisabled = ${JSON.stringify(disabled)}\n`,
+  );
+  const listFile = join(workDir, "grok-list.json");
+  const removedListFile = join(workDir, "grok-list-removed.json");
+  await writeFile(listFile, listJson);
+  await writeFile(removedListFile, "[]");
+  const script = `#!/bin/sh
+echo "grok $@" >> ${invocationsFile}
+if [ "$1 $2 $3" = "plugin list --json" ]; then cat ${listFile}; exit 0; fi
+if [ "$1 $2" = "plugin uninstall" ]; then cp ${removedListFile} ${listFile}; exit 0; fi
+exit 0
+`;
+  const p = join(binDir, "grok");
   await writeFile(p, script);
   await chmod(p, 0o755);
   process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
@@ -361,6 +391,43 @@ describe("runPluginUninstall (orchestrator)", () => {
     const r = await runPluginUninstall({ plugins: ["foo@mkt-a"], agents: ["claude-code"], apply: false });
     const claudeTargets = r.native.filter((t) => t.agent === "claude-code" && t.present);
     expect(claudeTargets.map((t) => t.marketplace)).toEqual(["mkt-a"]);
+  });
+
+  test("a disabled Grok plugin is planned and sent through native uninstall", async () => {
+    const fooDir = join(workDir, "plugins", "foo");
+    await mkdir(fooDir, { recursive: true });
+    await installFakeClaude("[]");
+    await installFakeGrok(JSON.stringify([{
+      status: "installed",
+      name: "foo",
+      repo_key: "owner/repo",
+      version: "1.0.0",
+      path: fooDir,
+      source: "owner/repo",
+      marketplace: "grok-mkt",
+    }]), ["foo"]);
+    await installFakeNpx({ listJson: "[]" });
+
+    const report = await runPluginUninstall({
+      plugins: ["foo@grok-mkt"],
+      agents: ["grok-build"],
+      apply: true,
+    });
+
+    expect(report.native).toContainEqual({
+      agent: "grok-build",
+      plugin: "foo",
+      marketplace: "grok-mkt",
+      present: true,
+    });
+    expect(report.nativeResults).toContainEqual({
+      agent: "grok-build",
+      target: "foo",
+      status: "uninstalled",
+    });
+    expect((await readInvocations()).some(
+      (line) => line.trim() === "grok plugin uninstall foo --confirm",
+    )).toBe(true);
   });
 
   // Regression (review P2): when the mirror put a plugin's skills onto Codex via the
