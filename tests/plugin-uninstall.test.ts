@@ -128,20 +128,76 @@ exit 0
   process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
 }
 
-// Fake `npx`: skills list (returns listJson) + a configurable skills remove.
-async function installFakeNpx(opts: { listJson?: string; removeExit?: number; removeStderr?: string } = {}) {
+// Fake `npx`: skills list (returns a mutable listJson) + a configurable skills remove.
+// A successful remove updates the list so post-remove verification sees the state
+// change; removeListJson can model a partial target result.
+async function installFakeNpx(opts: {
+  listJson?: string;
+  removeListJson?: string;
+  listExit?: number;
+  removeExit?: number;
+  removeStderr?: string;
+} = {}) {
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
+  const listFile = join(workDir, "skills-list.json");
+  await writeFile(listFile, opts.listJson ?? "[]");
+  const removeExit = opts.removeExit ?? 0;
   const script = `#!/bin/sh
 echo "npx $@" >> ${invocationsFile}
-if [ "$2 $3" = "skills list" ]; then echo '${opts.listJson ?? "[]"}'; exit 0; fi
-if [ "$2 $3" = "skills remove" ]; then ${opts.removeStderr ? `echo "${opts.removeStderr}" >&2;` : ""} exit ${opts.removeExit ?? 0}; fi
+if [ "$2 $3" = "skills list" ]; then cat ${listFile}; exit ${opts.listExit ?? 0}; fi
+if [ "$2 $3" = "skills remove" ]; then ${opts.removeStderr ? `echo "${opts.removeStderr}" >&2;` : ""} if [ ${removeExit} -eq 0 ]; then printf '%s' '${opts.removeListJson ?? "[]"}' > ${listFile}; fi; exit ${removeExit}; fi
 exit 0
 `;
   const p = join(binDir, "npx");
   await writeFile(p, script);
   await chmod(p, 0o755);
   process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+}
+
+// A small upstream-shaped fixture: list derives its agent labels from the actual
+// Pi/Cline target paths, and remove mutates only the selected target paths. This
+// keeps the regression at the process boundary instead of trusting a fake exit code.
+async function installFilesystemSkillNpx(opts: { leavePi?: boolean; blockVerification?: boolean } = {}) {
+  const binDir = join(workDir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const clineSkill = join(workDir, ".agents", "skills", "alpha");
+  const piSkill = join(workDir, ".pi", "agent", "skills", "alpha");
+  const blocked = join(workDir, "skills-list-blocked");
+  const leavePi = opts.leavePi ? 1 : 0;
+  const script = `#!/bin/sh
+echo "npx $@" >> ${invocationsFile}
+if [ "$2 $3" = "skills list" ]; then
+  if [ -f "${blocked}" ]; then echo "skills list unavailable" >&2; exit 1; fi
+  agents=""
+  if [ -f "${clineSkill}/SKILL.md" ]; then agents='"Cline"'; fi
+  if [ -f "${piSkill}/SKILL.md" ]; then
+    if [ -n "$agents" ]; then agents="$agents,\"Pi\""; else agents='"Pi"'; fi
+  fi
+  if [ -n "$agents" ]; then printf '[{"name":"alpha","path":"${clineSkill}","agents":[%s]}]\n' "$agents"; else echo '[]'; fi
+  exit 0
+fi
+if [ "$2 $3" = "skills remove" ]; then
+  case " $* " in *" -a cline "*) rm -rf "${clineSkill}" ;; esac
+  case " $* " in *" -a pi "*) if [ ${leavePi} -eq 0 ]; then rm -rf "${piSkill}"; fi ;; esac
+  ${opts.blockVerification ? `touch "${blocked}"` : ""}
+  exit 0
+fi
+exit 0
+`;
+  const p = join(binDir, "npx");
+  await writeFile(p, script);
+  await chmod(p, 0o755);
+  process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Materialize a plugin install dir with skills/<name>/SKILL.md leaves.
@@ -319,6 +375,68 @@ describe("runPluginUninstall (orchestrator)", () => {
       listJson: '[{"name":"alpha","agents":["OpenCode","Gemini CLI"]},{"name":"shared","agents":["OpenCode"]},{"name":"beta","agents":["OpenCode"]}]',
     });
   }
+
+  async function setupPiClinePlugin(opts: { leavePi?: boolean; blockVerification?: boolean } = {}) {
+    const fooDir = join(workDir, "plugins", "foo");
+    const clineSkill = join(workDir, ".agents", "skills", "alpha");
+    const piSkill = join(workDir, ".pi", "agent", "skills", "alpha");
+    await writePluginSkills(fooDir, ["alpha"]);
+    await installFakeClaude(JSON.stringify([{ id: "foo@mkt", enabled: true, installPath: fooDir }]));
+    await mkdir(clineSkill, { recursive: true });
+    await mkdir(piSkill, { recursive: true });
+    await writeFile(join(clineSkill, "SKILL.md"), "---\nname: alpha\n---\n");
+    await writeFile(join(piSkill, "SKILL.md"), "---\nname: alpha\n---\n");
+    await installFilesystemSkillNpx(opts);
+    return { clineSkill, piSkill };
+  }
+
+  test("removes Pi and Cline through their real upstream targets and verifies both paths", async () => {
+    const { clineSkill, piSkill } = await setupPiClinePlugin();
+    const report = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["pi", "cline"],
+      apply: true,
+    });
+
+    expect(report.skillResult?.status).toBe("removed");
+    expect(report.skillResult?.results).toEqual([
+      expect.objectContaining({ agent: "cline", removed: ["alpha"], remaining: [], verified: true, status: "removed" }),
+      expect.objectContaining({ agent: "pi", removed: ["alpha"], remaining: [], verified: true, status: "removed" }),
+    ]);
+    expect((await readInvocations()).some(
+      (line) => line.trim() === "npx -y skills remove -g -a cline -a pi -s alpha -y",
+    )).toBe(true);
+    expect(await fileExists(join(clineSkill, "SKILL.md"))).toBe(false);
+    expect(await fileExists(join(piSkill, "SKILL.md"))).toBe(false);
+  });
+
+  test("reports partial removal when one selected target remains after a successful command", async () => {
+    await setupPiClinePlugin({ leavePi: true });
+    const report = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["pi", "cline"],
+      apply: true,
+    });
+
+    expect(report.skillResult?.status).toBe("partial");
+    expect(report.skillResult?.results).toEqual([
+      expect.objectContaining({ agent: "cline", removed: ["alpha"], remaining: [], status: "removed" }),
+      expect.objectContaining({ agent: "pi", removed: [], remaining: ["alpha"], status: "blocked" }),
+    ]);
+  });
+
+  test("blocks removal when selected-agent post-remove verification is unreadable", async () => {
+    await setupPiClinePlugin({ blockVerification: true });
+    const report = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["pi", "cline"],
+      apply: true,
+    });
+
+    expect(report.skillResult?.status).toBe("blocked");
+    expect(report.skillResult?.results.every((result) => result.status === "blocked" && !result.verified)).toBe(true);
+    expect(report.skillResult?.message).toMatch(/verification failed/i);
+  });
 
   test("preview: keeps a skill another plugin still provides; narrows skill agents to those holding it", async () => {
     await setupTwoPlugins();

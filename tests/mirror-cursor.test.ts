@@ -194,7 +194,7 @@ describe("mirror cursor push", () => {
     expect(mirrorHasChanges(report)).toBe(true);
   });
 
-  test("apply installs each repo to cursor via `npx plugins add --target cursor`", async () => {
+  test("apply installs each repo to cursor via pinned Open Plugins", async () => {
     await fakeClaude(
       [{ id: "foo@mkt1" }, { id: "bar@mkt1" }],
       [{ name: "mkt1", source: "github", repo: "owner/one" }],
@@ -204,8 +204,8 @@ describe("mirror cursor push", () => {
     const report = await runMirror({ from: "claude-code", apply: true });
     expect(report.cursor.results).toEqual([{ repo: "owner/one", status: "installed" }]);
     const inv = await invocations();
-    const cursorCalls = inv.filter((l) => /^npx plugins add .* --target cursor -y$/.test(l.trim()));
-    expect(cursorCalls).toEqual(["npx plugins add owner/one --target cursor -y"]);
+    const cursorCalls = inv.filter((l) => /^npx -y plugins@1\.3\.4 add .* --target cursor -y$/.test(l.trim()));
+    expect(cursorCalls).toEqual(["npx -y plugins@1.3.4 add owner/one --target cursor -y"]);
   });
 
   test("apply mirrors a standalone local artifact to Cursor and loose-skill targets", async () => {
@@ -233,7 +233,7 @@ describe("mirror cursor push", () => {
     ]);
     const calls = await invocations();
     expect(calls).toContain(
-      `npx plugins add ${canonical} --target cursor -y`,
+      `npx -y plugins@1.3.4 add ${canonical} --target cursor -y`,
     );
     expect(
       calls.some((line) =>
@@ -342,7 +342,7 @@ describe("mirror codex skills-fallback (provisioning on by default)", () => {
     await mkdir(join(clone, "skills", "kit"), { recursive: true });
     await writeFile(join(clone, "skills", "kit", "SKILL.md"), "---\nname: kit\n---\n");
     await fakeCodex([]); // Codex has nothing, and its list never exposes `kit`
-    await fakeNpx(); // `plugins add` (provision + cursor) and `skills add` all exit 0
+    await fakeNpx(); // pinned Open Plugins (provision + cursor) and `skills add` all exit 0
 
     const report = await runMirror({ from: "claude-code", apply: true }); // provision defaults on
     const codex = report.targets.find((t) => t.to === "codex")!;

@@ -148,7 +148,7 @@ describe("runPluginAdd", () => {
     expect(r.mcp.find((m) => m.agent === "opencode")?.added).toContain("srv");
     const inv = await readInvocations();
     expect(inv.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
-    expect(inv.some((l) => l.trim() === "npx plugins add owner/foo --target cursor -y")).toBe(true);
+    expect(inv.some((l) => l.trim() === "npx -y plugins@1.3.4 add owner/foo --target cursor -y")).toBe(true);
     expect(inv.some((l) => /npx -y skills add owner\/foo .* -a opencode -y/.test(l))).toBe(true);
     // The lifted server landed in opencode's own MCP config.
     const oc = JSON.parse(await readFile(join(workDir, ".config", "opencode", "opencode.json"), "utf8"));
@@ -218,7 +218,7 @@ describe("runPluginAdd", () => {
     });
     const calls = await readInvocations();
     expect(calls).toContain(
-      `npx plugins add ${canonical} --target cursor -y`,
+      `npx -y plugins@1.3.4 add ${canonical} --target cursor -y`,
     );
     expect(
       calls.some((line) =>

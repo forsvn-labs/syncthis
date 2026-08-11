@@ -25,9 +25,9 @@ export type MainChoice = "sync" | "list" | "remove" | "quit";
 type MenuOption<T extends string> = { value: T; label: string; hint?: string };
 
 export const MAIN_MENU: MenuOption<MainChoice>[] = [
-  { value: "sync", label: "Plugin Sync", hint: "reconcile every installed plugin" },
-  { value: "list", label: "Plugin List", hint: "readable state + Cursor verification note" },
-  { value: "remove", label: "Plugin Remove", hint: "guarded plugin uninstall" },
+  { value: "sync", label: "Plugins Fleet Sync", hint: "reconcile every installed plugin" },
+  { value: "list", label: "Plugins Fleet List", hint: "readable state + Cursor verification note" },
+  { value: "remove", label: "Plugins Fleet Remove", hint: "guarded plugin uninstall" },
   { value: "quit", label: "Quit" },
 ];
 
@@ -41,10 +41,10 @@ function flowHeader(path: string[], what: string) {
 }
 
 export async function showInteractivePicker(): Promise<void> {
-  intro("syncthis");
+  intro("Plugins Fleet");
 
   note(
-    "Discover installed plugins from every readable native source and reconcile them across supported targets. Sync previews before applying.",
+    "Plugins Fleet discovers installed plugins from every readable native source and reconciles them across supported targets. Sync previews before applying.",
     "what is this?",
   );
 
@@ -68,7 +68,7 @@ export async function showInteractivePicker(): Promise<void> {
 }
 
 async function doPluginList() {
-  flowHeader(["Plugins", "List"], "Read-only native plugin state. Cursor is write-only and unverified.");
+  flowHeader(["Plugins Fleet", "List"], "Read-only native plugin state. Cursor is write-only and unverified.");
   const o = await buildPluginOverview();
   for (const r of o.native) {
     if (r.error) log.error(`${r.agent}: ${r.error}`);
@@ -86,7 +86,7 @@ export type PluginSyncFlowDeps = {
 };
 
 /**
- * Shared preview/apply orchestration for the interactive Plugin Sync action.
+ * Shared preview/apply orchestration for the interactive Plugins Fleet Sync action.
  * The injected runner is the same `runSync` contract used by the CLI, so the
  * picker cannot accidentally fall back to the old source/target add flow.
  */
@@ -102,7 +102,7 @@ export async function runPluginSyncFlow(deps: PluginSyncFlowDeps = {}) {
   }
 
   const confirmed = await (deps.confirm ?? confirmYes)(
-    "apply plugin sync across all supported targets?",
+    "apply Plugins Fleet sync across all supported targets?",
   );
   if (!confirmed) return { preview, cancelled: true as const };
 
@@ -113,14 +113,14 @@ export async function runPluginSyncFlow(deps: PluginSyncFlowDeps = {}) {
 
 async function syncPlugins() {
   flowHeader(
-    ["Plugins", "Sync"],
-    "Discover installed plugins from every readable native source and reconcile them across supported targets. Each target gets one canonical outcome.",
+    ["Plugins Fleet", "Sync"],
+    "Plugins Fleet discovers installed plugins from every readable native source and reconciles them across supported targets. Each target gets one canonical outcome.",
   );
   await runPluginSyncFlow();
 }
 
 async function removePlugins() {
-  flowHeader(["Plugins", "Remove"], "Guarded uninstall: removes selected plugins from the chosen agents. You'll preview the exact changes and confirm before anything is removed.");
+  flowHeader(["Plugins Fleet", "Remove"], "Guarded uninstall: removes selected plugins from the chosen agents. You'll preview the exact changes and confirm before anything is removed.");
   const reads = await listPlugins();
   const names = dedupe(reads.flatMap((r) => (r.error ? [] : r.plugins.map((p) => p.name)))).sort();
   if (names.length === 0) {
@@ -185,8 +185,22 @@ async function removePlugins() {
     else if (res.status === "failed") failed += 1;
   }
   if (applied.skillResult) {
-    if (applied.skillResult.status === "removed") removed += applied.skillResult.skills.length;
-    else if (applied.skillResult.status === "failed") failed += 1;
+    const skillRemoved = applied.skillResult.results.reduce(
+      (count, target) => count + target.removed.length,
+      0,
+    );
+    removed += skillRemoved;
+    if (applied.skillResult.status === "partial") {
+      failed += 1;
+      const remaining = applied.skillResult.results
+        .filter((target) => target.remaining.length > 0)
+        .map((target) => `${target.agent}: ${target.remaining.join(", ")}`)
+        .join("; ");
+      log.error(`plugin adaptation removal partial — remaining: ${remaining || "verification unavailable"}`);
+    } else if (applied.skillResult.status === "blocked" || applied.skillResult.status === "failed") {
+      failed += 1;
+      log.error(`plugin adaptation removal blocked (${neutralPluginText(applied.skillResult.message, "verification failed")})`);
+    }
   }
   for (const result of applied.mcpResults ?? []) {
     if (result.status === "synced") {

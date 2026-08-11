@@ -12,6 +12,7 @@ import {
   codexPluginIdentityCandidates,
   isSafeRepoSlug,
   isValidCodexPluginName,
+  openPluginsArgs,
   parsePluginId,
   pluginNamesOverlap,
   run,
@@ -35,7 +36,7 @@ function resolvedConfigPath(): string {
   return join(resolvedCodexHome(), "config.toml");
 }
 
-// The vercel-labs `npx plugins` marketplace — the cross-agent ecosystem syncthis
+// The pinned vercel-labs/plugins Open Plugins CLI — the cross-agent ecosystem syncthis
 // mirrors. Preferred when a bare plugin name is ambiguous across Codex
 // marketplaces (e.g. also present in an OpenAI-bundled/curated one).
 const PREFERRED_MARKETPLACE = "plugins-cli";
@@ -121,7 +122,7 @@ export function parseCodexPluginList(text: string): PluginRecord[] {
 }
 
 // Keys (`name@marketplace`, or bare name) of the *installed* plugins in a snapshot.
-// Used to diff before/after a provisioning `npx plugins add`: a multi-plugin repo
+// Used to diff before/after a provisioning `npx -y plugins@1.3.4 add`: a multi-plugin repo
 // installs its canonical plugin under the repo's own plugin.json name — which may
 // differ from the Claude-side name we were asked for (e.g. Claude's
 // `github.com-garrytan-gstack` vs the repo's `gstack`). The name we asked for then
@@ -501,20 +502,20 @@ async function planAfterProvision(
 ): Promise<CodexInstallPlan> {
   const provision = await run(
     "npx",
-    ["plugins", "add", plan.sourceRepo, "--target", "codex", "-y"],
+    openPluginsArgs(["add", plan.sourceRepo, "--target", "codex", "-y"]),
     { timeoutMs: 180_000 },
   );
   if (provision.notFound) {
     return resultPlan(
       installResult(plan.requestedName, "skipped", {
-        message: "cannot provision — `npx plugins` not found",
+        message: "cannot provision — `npx -y plugins@1.3.4` not found",
       }),
     );
   }
   if (!provision.ok) {
     return failurePlan(
       plan.requestedName,
-      `provision failed (npx plugins add ${plan.sourceRepo}): ${provision.stderr.trim() || `exit ${provision.exitCode}`}`,
+      `provision failed (npx -y plugins@1.3.4 add ${plan.sourceRepo}): ${provision.stderr.trim() || `exit ${provision.exitCode}`}`,
     );
   }
 

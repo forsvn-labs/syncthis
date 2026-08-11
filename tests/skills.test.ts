@@ -134,15 +134,18 @@ describe("addArgs", () => {
     ]);
   });
 
-  test("dedupes Pi, Cline, and Prime Agent's shared universal target", () => {
+  test("keeps universal for add/share but uses real target ids for removal", () => {
     expect(addArgs("owner/repo", ["pi", "cline", "prime-agent"])).toEqual([
       "-y", "skills", "add", "owner/repo", "-g", "-s", "*", "-a", "universal", "-y",
     ]);
     expect(installedAddArgs("/store/alpha", "alpha", ["pi", "cline", "prime-agent"])).toEqual([
       "-y", "skills", "add", "/store/alpha", "-g", "-s", "alpha", "-a", "universal", "-y",
     ]);
+    expect(removeArgs(["alpha"], ["pi", "cline"])).toEqual([
+      "-y", "skills", "remove", "-g", "-a", "pi", "-a", "cline", "-s", "alpha", "-y",
+    ]);
     expect(removeArgs(["alpha"], ["pi", "cline", "prime-agent"])).toEqual([
-      "-y", "skills", "remove", "-g", "-a", "universal", "-s", "alpha", "-y",
+      "-y", "skills", "remove", "-g", "-a", "pi", "-a", "cline", "-a", "universal", "-s", "alpha", "-y",
     ]);
   });
 });

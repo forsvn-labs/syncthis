@@ -36,7 +36,7 @@ export type AgentId =
 
 export type SyncStatus = "synced" | "unchanged" | "skipped" | "failed";
 export type DoctorStatus = "ok" | "drift" | "missing" | "invalid";
-export type RowStatus = SyncStatus | DoctorStatus;
+export type RowStatus = SyncStatus | DoctorStatus | "partial" | "blocked";
 
 export type AdapterCompatibilityIssue = {
   agent: AgentId;

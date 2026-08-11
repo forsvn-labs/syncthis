@@ -7,7 +7,7 @@ import {
   type ValidatedPluginRoot,
 } from "./local-source.ts";
 import type { PluginReconcileTarget } from "./reconcile.ts";
-import { isSafeRepoSlug, run } from "./shell.ts";
+import { isSafeRepoSlug, openPluginsArgs, run } from "./shell.ts";
 
 const CURSOR_PLUGIN_INSTALL_TIMEOUT_MS = 180_000;
 
@@ -43,11 +43,11 @@ function cursorPluginTarget(): PluginReconcileTarget {
 
       const result = await run(
         "npx",
-        ["plugins", "add", source, "--target", "cursor", "-y"],
+        openPluginsArgs(["add", source, "--target", "cursor", "-y"]),
         { timeoutMs: CURSOR_PLUGIN_INSTALL_TIMEOUT_MS },
       );
       if (result.notFound) {
-        return { ok: false, message: "`npx plugins` not found on PATH" };
+        return { ok: false, message: "`npx -y plugins@1.3.4` not found on PATH" };
       }
       if (result.timedOut) {
         return {
@@ -58,7 +58,7 @@ function cursorPluginTarget(): PluginReconcileTarget {
       return {
         ok: result.ok,
         message: result.ok
-          ? "installed via npx plugins (activation cannot be read)"
+          ? "installed via npx -y plugins@1.3.4 (activation cannot be read)"
           : result.stderr.trim() || `exit ${result.exitCode}`,
       };
     },

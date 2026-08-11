@@ -19,7 +19,7 @@ import {
 } from "./lifecycle.ts";
 import { resolvePluginMcpServers } from "./mcp.ts";
 import type { McpCohortResult } from "./mirror.ts";
-import { run } from "./shell.ts";
+import { openPluginsArgs, run } from "./shell.ts";
 import type { PluginAdapterRead, PluginInstallResult, PluginRecord } from "./types.ts";
 import { findAdapter } from "../adapters/index.ts";
 import { diffServers } from "../mcp-state.ts";
@@ -279,8 +279,8 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
     const results: PluginAddCursor["results"] = [];
     for (const source of cursorSources) {
       tick(`cursor: ${source}`);
-      const r = await run("npx", ["plugins", "add", source, "--target", "cursor", "-y"], { timeoutMs: CURSOR_PLUGINS_TIMEOUT_MS });
-      if (r.notFound) results.push({ repo: source, status: "failed", message: "`npx plugins` not found on PATH" });
+      const r = await run("npx", openPluginsArgs(["add", source, "--target", "cursor", "-y"]), { timeoutMs: CURSOR_PLUGINS_TIMEOUT_MS });
+      if (r.notFound) results.push({ repo: source, status: "failed", message: "`npx -y plugins@1.3.4` not found on PATH" });
       else if (r.timedOut) results.push({ repo: source, status: "failed", message: `timed out after ${CURSOR_PLUGINS_TIMEOUT_MS / 1000}s` });
       else if (!r.ok) results.push({ repo: source, status: "failed", message: r.stderr.trim() || `exit ${r.exitCode}` });
       else results.push({ repo: source, status: "installed" });

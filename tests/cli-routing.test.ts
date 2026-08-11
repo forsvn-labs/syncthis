@@ -59,6 +59,8 @@ describe("plugin-only public help", () => {
   test("top-level help exposes only the reliable plugin core", () => {
     const result = run(["help"]);
     expect(result.code).toBe(0);
+    expect(result.out).toContain("Plugins Fleet");
+    expect(result.out).toContain("Plugins Fleet is a user-facing rebrand; the syncthis CLI, npm package,");
     for (const command of [
       "syncthis sync",
       "syncthis plugins list",
@@ -86,6 +88,7 @@ describe("plugin-only public help", () => {
   test("plugin help stays within the public plugin surface", () => {
     const result = run(["plugins", "help"]);
     expect(result.code).toBe(0);
+    expect(result.out).toContain("Plugins Fleet");
     expect(result.out).toContain("syncthis plugins list");
     expect(result.out).toContain("syncthis plugins rm");
     expect(result.out).not.toContain("plugins mirror");

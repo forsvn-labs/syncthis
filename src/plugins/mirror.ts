@@ -26,7 +26,7 @@ import {
   type ArtifactPlan,
 } from "./lifecycle.ts";
 import { resolvePluginMcpServers, type PluginMcpServer, type PluginMcpSkip } from "./mcp.ts";
-import { run } from "./shell.ts";
+import { openPluginsArgs, run } from "./shell.ts";
 import type {
   PluginAdapter,
   PluginAdapterRead,
@@ -378,7 +378,7 @@ export async function runMirror(opts: MirrorRunOpts): Promise<MirrorReport> {
 // plugin-list CLI, so this is additive and unconditional — we can't diff against
 // cursor's current state. Repos are deduped (a multi-plugin marketplace installs
 // once) and slug-validated (an adversarial marketplace entry can't smuggle a flag
-// into the `npx plugins` invocation).
+// into the pinned Open Plugins invocation).
 async function pushToCursor(
   fromRead: PluginAdapterRead,
   sources: Map<string, string> | null | undefined,
@@ -399,7 +399,7 @@ async function pushToCursor(
   if (repos.length === 0 && sources === undefined) {
     return {
       supported: false,
-      reason: "primary can't supply github source repos for `npx plugins` — run `syncthis mirror claude-code` to populate cursor",
+      reason: "primary can't supply github source repos for pinned Open Plugins — run `syncthis mirror claude-code` to populate cursor",
       repos: [],
       results: [],
     };
@@ -417,11 +417,11 @@ async function pushToCursor(
   const results: CursorPushResult[] = [];
   for (const [i, repo] of repos.entries()) {
     onProgress?.(`cursor: ${repo}`, i + 1, repos.length);
-    const res = await run("npx", ["plugins", "add", repo, "--target", "cursor", "-y"], {
+    const res = await run("npx", openPluginsArgs(["add", repo, "--target", "cursor", "-y"]), {
       timeoutMs: CURSOR_PLUGINS_TIMEOUT_MS,
     });
     if (res.notFound) {
-      results.push({ repo, status: "failed", message: "`npx plugins` not found on PATH" });
+      results.push({ repo, status: "failed", message: "`npx -y plugins@1.3.4` not found on PATH" });
       continue;
     }
     if (res.timedOut) {

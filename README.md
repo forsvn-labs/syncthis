@@ -1,10 +1,10 @@
-# syncthis
+# Plugins Fleet
 
 **Install a plugin once. Use it everywhere.**
 
-`syncthis` is the cross-client sync, adaptation, and verification layer for [Agent Plugins](https://agent-plugins.org/). Agent Plugins defines the plugin model; syncthis does not compete with it or invent another format or registry. It starts with plugins installed in one coding agent and makes them usable everywhere else.
+Plugins Fleet (`syncthis`) is the cross-client sync, adaptation, and verification layer for [Agent Plugins](https://agent-plugins.org/). Agent Plugins defines the plugin model; Plugins Fleet does not compete with it or invent another format or registry. It starts with plugins installed in one coding agent and makes them usable everywhere else.
 
-The only public object is an installed plugin. Syncthis discovers plugin installations from readable native hosts, packages their source independently of any one client cache, reconciles them across supported targets, and reports what each target can honestly claim.
+The only public object is an installed plugin. Plugins Fleet discovers plugin installations from readable native hosts, packages their source independently of any one client cache, reconciles them across supported targets, and reports what each target can honestly claim.
 
 ## Quick start
 
@@ -16,7 +16,7 @@ syncthis sync --dry-run
 syncthis sync
 ```
 
-Running `syncthis` with no arguments opens the Plugin Sync flow in a terminal. It discovers installed plugins automatically; there is no source, plugin, or destination picker in the default workflow. A non-interactive invocation prints help.
+Running `syncthis` with no arguments opens the Plugins Fleet flow in a terminal. It discovers installed plugins automatically; there is no source, plugin, or destination picker in the default workflow. A non-interactive invocation prints help.
 
 ## Public commands
 
@@ -34,12 +34,12 @@ syncthis help
 - `plugins list` is read-only and shows native state for readable hosts plus Cursor's write-only limitation.
 - `plugins rm` is the guarded removal path. It requires an explicit scope, shows the exact change set, and requires terminal confirmation or `--yes`.
 - `doctor` is a read-only plugin overview.
-- `update` updates syncthis itself; `version` prints the installed version.
+- `update` updates the `syncthis` executable; `version` prints the installed version.
 
 ## How sync works
 
 1. **Discover.** The default sync reads installed plugin records from Claude Code, Codex, GitHub Copilot, and Grok Build when their native registries are readable. A failed source read is reported as `blocked`; an empty source is not silently treated as proof that no plugins exist.
-2. **Package.** A discovered plugin is materialized into syncthis's managed, source-independent package store. Target installs therefore do not depend on a source client's mutable cache or on a guessed marketplace name.
+2. **Package.** A discovered plugin is materialized into Plugins Fleet's managed, source-independent package store. Target installs therefore do not depend on a source client's mutable cache or on a guessed marketplace name.
 3. **Reconcile.** Targets with a proven native plugin ABI receive the plugin through their own installer. Targets without one receive the safest supported adaptation when the package can be represented there. Existing conflicting state is left untouched.
 4. **Verify.** Every readable native target is read again after apply. An installer exit code alone is never proof of native activation. Cursor is write-only, so a successful push is reported as an adaptation rather than native activation.
 5. **Report.** Each plugin-target has exactly one public outcome. Detailed installer and adaptation diagnostics are secondary evidence, never extra product categories.
@@ -79,7 +79,7 @@ The detailed report never upgrades unresolved work into a success. Conflicts, om
 
 The matrix describes the normal capability path, not a guarantee that every plugin artifact is portable. A particular target can honestly report `partial`, `blocked`, or `unsupported` instead.
 
-Grok Build accepts Agent Plugins through its native `grok plugin` lifecycle, including trusted installation, activation, listing, and removal. Prime Agent, Pi, and Cline receive private capability-preserving adaptations; Cline's separate TypeScript plugin ABI is not treated as Agent Plugins-native, so syncthis does not generate or claim a native Cline wrapper.
+Grok Build accepts Agent Plugins through its native `grok plugin` lifecycle, including trusted installation, activation, listing, and removal. Prime Agent, Pi, and Cline receive private capability-preserving adaptations; Cline's separate TypeScript plugin ABI is not treated as Agent Plugins-native, so Plugins Fleet does not generate or claim a native Cline wrapper.
 
 ## Safety
 
@@ -91,6 +91,10 @@ Grok Build accepts Agent Plugins through its native `grok plugin` lifecycle, inc
 - `--keep-data` is opt-in and only affects native uninstall paths that support it (currently Claude Code and Grok Build).
 
 Private target adaptations may use bundled implementation components behind the boundary, but those components are not public products, installed-plugin records, or public statuses.
+
+## Compatibility note
+
+Plugins Fleet is a user-facing rebrand only. The executable remains `syncthis`, the npm package remains `@hungv47/syncthis`, repository URLs remain unchanged, and existing config paths, `SYNCTHIS_*` environment variables, and `.syncthis.bak` backup identifiers remain compatible.
 
 ## Notes
 

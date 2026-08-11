@@ -17,20 +17,9 @@ function readPackageVersion(): string {
 
 const VERSION = readPackageVersion();
 
-// The "syncthis" wordmark, pre-rendered in cfonts' `block` font. Embedded as a
-// static string on purpose: cfonts (via ink-big-text) loads its font JSON with a
-// runtime `require("../fonts/block.json")`, which `bun build` can't resolve, so the
-// single-file bundle threw "Font file for the font 'block' could not be found" for
-// every published (node-bundled) install. A static banner has no runtime font
-// dependency — the gradient still colors it. Regenerate via cfonts if the name changes.
-const WORDMARK = [
-  " ███████╗ ██╗   ██╗ ███╗   ██╗  ██████╗ ████████╗ ██╗  ██╗ ██╗ ███████╗",
-  " ██╔════╝ ╚██╗ ██╔╝ ████╗  ██║ ██╔════╝ ╚══██╔══╝ ██║  ██║ ██║ ██╔════╝",
-  " ███████╗  ╚████╔╝  ██╔██╗ ██║ ██║         ██║    ███████║ ██║ ███████╗",
-  " ╚════██║   ╚██╔╝   ██║╚██╗██║ ██║         ██║    ██╔══██║ ██║ ╚════██║",
-  " ███████║    ██║    ██║ ╚████║ ╚██████╗    ██║    ██║  ██║ ██║ ███████║",
-  " ╚══════╝    ╚═╝    ╚═╝  ╚═══╝  ╚═════╝    ╚═╝    ╚═╝  ╚═╝ ╚═╝ ╚══════╝",
-].join("\n");
+// Keep the Plugins Fleet wordmark as a static string so the published Node bundle
+// has no runtime font-file dependency. The gradient supplies the visual treatment.
+const WORDMARK = "PLUGINS FLEET";
 
 interface CommandRow {
   cmd: string;

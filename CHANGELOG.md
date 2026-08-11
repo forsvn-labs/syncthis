@@ -2,6 +2,16 @@
 
 All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.19.0] — 2026-08-11
+
+### Changed
+- **The product is now Plugins Fleet.** Public help, the interactive terminal, package metadata, README, and product contract use the new name while the `syncthis` executable, npm package, repository URLs, configuration, environment variables, and backup identifiers remain compatible.
+- **Open Plugins provisioning is reproducible.** Cross-agent installs invoke the documented upstream package as `npx -y plugins@1.3.4` instead of resolving an unpinned latest version or prompting interactively.
+
+### Fixed
+- **Pi and Cline plugin removal now reaches the selected agents.** Removal passes each real upstream target instead of the shared `universal` add target, which could exit successfully while leaving both agents unchanged.
+- **Removal success requires fresh per-agent verification.** Plugins Fleet reports `partial` or `blocked` when a selected target still contains the bundled skill or its post-remove state cannot be read, eliminating false-success removal reports.
+
 ## [0.18.0] — 2026-08-10
 
 ### Added

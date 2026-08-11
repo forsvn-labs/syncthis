@@ -29,7 +29,7 @@ export type PluginInstallOpts = {
   // belongs in sourceMarketplace and must never be treated as target-local.
   marketplace?: string;
   // When true, a target may register a missing marketplace before installing
-  // (e.g. Codex shells `npx plugins add <sourceRepo> --target codex`). The mirror
+  // (e.g. Codex shells the pinned Open Plugins CLI `npx -y plugins@1.3.4 add <sourceRepo> --target codex`). The mirror
   // sets this on by default now (matched by a `--no-provision` opt-out) — making a
   // plugin's content actually reachable on the target is the point of a mirror.
   provision?: boolean;
@@ -44,7 +44,7 @@ export type PluginInstallOpts = {
   // (e.g. ~/.claude/plugins/marketplaces/<mkt>). When present, the target installs
   // by registering this clone via `<target> plugin marketplace add <path>` and
   // installing `<name>@<marketplace>` from it — network-free, and the preferred path
-  // over `npx plugins` provisioning. `sourceRepo` stays the fallback when no clone
+  // over pinned Open Plugins provisioning. `sourceRepo` stays the fallback when no clone
   // exists. See src/plugins/marketplace.ts.
   sourceClonePath?: string;
   // Exact validated plugin directory staged by an external installer. Native

@@ -77,7 +77,7 @@ describe("Cursor plugin reconciliation target", () => {
     expect(result).toMatchObject({ ok: true });
     expect(result.message).toMatch(/cannot be read/i);
     expect((await readFile(log, "utf8")).trim()).toBe(
-      `npx plugins add ${await realpath(source)} --target cursor -y`,
+      `npx -y plugins@1.3.4 add ${await realpath(source)} --target cursor -y`,
     );
   });
 

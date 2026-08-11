@@ -23,7 +23,7 @@ real command name. The sandbox HOME is wiped before each tape and on exit.
 
 - **MCP flows** (`mcp sync`, `mcp <from> <to>`, `doctor`) are pure file I/O — recorded **live**
   so the GIF shows real writes and the `.syncthis.bak` safety net.
-- **Plugin / skills flows** shell out to `npx skills` / `npx plugins` / `claude` / `codex`, which
+- **Plugin / skills flows** shell out to `npx skills` / pinned Open Plugins (`npx -y plugins@1.3.4`) / `claude` / `codex`, which
   aren't present in the sandbox — record those with `--dry-run` / preview so they stay
   deterministic and need no external CLIs.
 

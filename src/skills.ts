@@ -17,7 +17,8 @@ export const PLUGIN_TARGET_AGENTS: readonly AgentId[] = ["claude-code", "codex",
 // Agents that support skills (vercel-labs/skills) but have NO native MCP config to
 // sync, so they get no MCP adapter — they appear in the SKILL cohort only, never in
 // MCP sync or the plugin→MCP decomposition. Pi, Cline, and Prime Agent ship
-// without an Agent Plugin ABI here; all consume the universal ~/.agents/skills store.
+// without an Agent Plugin ABI here; add/share uses the upstream shared store, while
+// removal passes each target's verified upstream id.
 export const SKILL_ONLY_AGENTS: readonly AgentId[] = ["pi", "cline", "prime-agent"];
 
 // The MCP cohort: every MCP-syncable agent that is NOT plugin-capable. These are the
@@ -204,8 +205,21 @@ const SKILL_AGENT_CLI_IDS: Partial<Record<AgentId, string>> = {
   // the whole multi-agent add/remove invocation, so translate only at the process
   // boundary and keep syncthis' public agent id stable.
   "kimi-cli": "kimi-code-cli",
+  // The add/share flows intentionally use the upstream shared universal store.
+  // Removal is different: the upstream remove command needs each real target id
+  // to unlink its target-specific registration (see SKILL_REMOVE_AGENT_CLI_IDS).
   pi: "universal",
   cline: "universal",
+  "prime-agent": "universal",
+};
+
+const SKILL_REMOVE_AGENT_CLI_IDS: Partial<Record<AgentId, string>> = {
+  "kimi-cli": "kimi-code-cli",
+  pi: "pi",
+  cline: "cline",
+  // Prime Agent has no upstream skills target. Keep its historical universal
+  // invocation for compatibility, but post-remove verification must block a
+  // false success until a Prime-specific target is proven.
   "prime-agent": "universal",
 };
 
@@ -213,8 +227,15 @@ export function skillAgentIdToCliId(agent: AgentId): string {
   return SKILL_AGENT_CLI_IDS[agent] ?? agent;
 }
 
-function uniqueSkillAgentCliIds(agents: readonly AgentId[]): string[] {
-  return [...new Set(agents.map(skillAgentIdToCliId))];
+export function skillRemoveAgentIdToCliId(agent: AgentId): string {
+  return SKILL_REMOVE_AGENT_CLI_IDS[agent] ?? agent;
+}
+
+function uniqueSkillAgentCliIds(
+  agents: readonly AgentId[],
+  toCliId: (agent: AgentId) => string = skillAgentIdToCliId,
+): string[] {
+  return [...new Set(agents.map(toCliId))];
 }
 
 // `path` is the skill's location in the shared store (~/.agents/skills/<name>) — a
@@ -521,10 +542,24 @@ export async function addSkillSources(
   return out;
 }
 
+export type SkillAgentRemoveStatus = "removed" | "partial" | "skipped" | "blocked";
+
+export type SkillAgentRemoveResult = {
+  agent: AgentId;
+  removed: string[];
+  remaining: string[];
+  // False means the target's authoritative skills list could not be read after
+  // the command. In that case `removed`/`remaining` are not filesystem claims.
+  verified: boolean;
+  status: SkillAgentRemoveStatus;
+  message?: string;
+};
+
 export type SkillRemoveResult = {
   skills: string[];
   agents: AgentId[];
-  status: "removed" | "skipped" | "failed";
+  status: "removed" | "partial" | "skipped" | "blocked" | "failed";
+  results: SkillAgentRemoveResult[];
   message?: string;
 };
 
@@ -532,21 +567,95 @@ export type SkillRemoveResult = {
 // each named agent, globally, non-interactively. Uses the repeated-flag form (one
 // `-a`/`-s` per value), matching `addArgs` — the convention already exercised in
 // production by the mirror — rather than packing values into a single variadic flag.
+// Unlike add/share, removal must pass Pi and Cline's real upstream target ids;
+// `universal` points at a different store and can exit successfully without touching
+// either selected target.
 export function removeArgs(names: string[], agents: readonly AgentId[]): string[] {
   const args = ["-y", "skills", "remove", "-g"];
-  for (const target of uniqueSkillAgentCliIds(agents)) args.push("-a", target);
+  for (const target of uniqueSkillAgentCliIds(agents, skillRemoveAgentIdToCliId)) args.push("-a", target);
   for (const n of names) args.push("-s", n);
   args.push("-y");
   return args;
 }
 
-function removeOne(names: string[], agents: readonly AgentId[]): Promise<SkillRemoveResult> {
-  return new Promise((resolve) => {
+function unverifiedSkillRemovalResults(
+  names: string[],
+  agents: readonly AgentId[],
+  message: string,
+): SkillAgentRemoveResult[] {
+  return agents.map((agent) => ({
+    agent,
+    removed: [],
+    remaining: [],
+    verified: false,
+    status: "blocked",
+    message,
+  }));
+}
+
+async function verifySkillRemoval(
+  names: string[],
+  agents: readonly AgentId[],
+): Promise<{ results: SkillAgentRemoveResult[]; message?: string }> {
+  let installed: InstalledSkill[] | null;
+  try {
+    installed = await listInstalledSkills();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      results: unverifiedSkillRemovalResults(
+        names,
+        agents,
+        `fresh skills list could not be read after removal: ${message}`,
+      ),
+      message: "fresh skills list verification failed after removal",
+    };
+  }
+  if (!installed) {
+    return {
+      results: unverifiedSkillRemovalResults(
+        names,
+        agents,
+        "fresh skills list could not be read after removal",
+      ),
+      message: "fresh skills list verification failed after removal",
+    };
+  }
+
+  const results = agents.map((agent): SkillAgentRemoveResult => {
+    const remaining = names.filter((name) =>
+      installed.some((skill) => skill.name === name && skill.agents.includes(agent)),
+    );
+    const removed = names.filter((name) => !remaining.includes(name));
+    const status: SkillAgentRemoveStatus =
+      remaining.length === 0
+        ? "removed"
+        : removed.length === 0
+          ? "blocked"
+          : "partial";
+    return { agent, removed, remaining, verified: true, status };
+  });
+  return { results };
+}
+
+function removalCounts(results: readonly SkillAgentRemoveResult[]): { removed: number; remaining: number } {
+  return results.reduce(
+    (counts, result) => ({
+      removed: counts.removed + result.removed.length,
+      remaining: counts.remaining + result.remaining.length,
+    }),
+    { removed: 0, remaining: 0 },
+  );
+}
+
+async function removeOne(names: string[], agents: readonly AgentId[]): Promise<SkillRemoveResult> {
+  const requestedAgents = [...new Set(agents)];
+  return await new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let settled = false;
-    const child = spawn("npx", removeArgs(names, agents), {
+    const child = spawn("npx", removeArgs(names, requestedAgents), {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
     });
@@ -560,22 +669,81 @@ function removeOne(names: string[], agents: readonly AgentId[]): Promise<SkillRe
       clearTimeout(timer);
       resolve(r);
     };
+    const verifyAndFinish = async (code: number, tail: string, noMatch: boolean) => {
+      const verification = await verifySkillRemoval(names, requestedAgents);
+      const results = verification.results;
+      const counts = removalCounts(results);
+      if (verification.message) {
+        finish({
+          skills: names,
+          agents: requestedAgents,
+          status: "blocked",
+          results,
+          message: `${verification.message}${tail ? `: ${tail}` : ""}`,
+        });
+        return;
+      }
+
+      if (code !== 0 && !noMatch) {
+        finish({
+          skills: names,
+          agents: requestedAgents,
+          status: counts.remaining > 0 && counts.removed > 0 ? "partial" : "failed",
+          results,
+          message: `exit ${code}: ${tail}`,
+        });
+        return;
+      }
+      if (counts.remaining === 0) {
+        finish({
+          skills: names,
+          agents: requestedAgents,
+          status: code === 0 ? "removed" : "skipped",
+          results: results.map((result) =>
+            code === 0 ? result : { ...result, status: "skipped", message: "no matching skills" },
+          ),
+          message: code === 0 ? undefined : "no matching skills",
+        });
+        return;
+      }
+      finish({
+        skills: names,
+        agents: requestedAgents,
+        status: counts.removed > 0 ? "partial" : "blocked",
+        results,
+        message:
+          code === 0
+            ? "skills remove exited successfully, but fresh verification found selected skills still present"
+            : `skills remove reported no matching skills, but fresh verification found selected skills still present${tail ? `: ${tail}` : ""}`,
+      });
+    };
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (d: string) => (stdout += d));
     child.stderr?.on("data", (d: string) => (stderr += d));
-    child.on("error", (err: Error) => finish({ skills: names, agents: [...agents], status: "failed", message: err.message }));
+    child.on("error", (err: Error) => finish({
+      skills: names,
+      agents: requestedAgents,
+      status: "failed",
+      results: unverifiedSkillRemovalResults(names, requestedAgents, err.message),
+      message: err.message,
+    }));
     child.on("close", (code) => {
-      if (timedOut) return finish({ skills: names, agents: [...agents], status: "failed", message: `timed out after ${SKILLS_ADD_TIMEOUT_MS / 1000}s` });
-      if (code === 0) return finish({ skills: names, agents: [...agents], status: "removed" });
+      if (timedOut) {
+        finish({
+          skills: names,
+          agents: requestedAgents,
+          status: "failed",
+          results: unverifiedSkillRemovalResults(names, requestedAgents, `timed out after ${SKILLS_ADD_TIMEOUT_MS / 1000}s`),
+          message: `timed out after ${SKILLS_ADD_TIMEOUT_MS / 1000}s`,
+        });
+        return;
+      }
+      const exitCode = code ?? -1;
       const blob = `${stdout}\n${stderr}`;
       const tail = stderr.trim().split("\n").pop() || stdout.trim().split("\n").pop() || "";
-      // The skills CLI exits non-zero when nothing matched — not a failure for us
-      // (the skill was already gone), so report it as a benign skip.
-      if (/no (matching )?skills?\b|not found|nothing to remove/i.test(blob)) {
-        return finish({ skills: names, agents: [...agents], status: "skipped", message: "no matching skills" });
-      }
-      finish({ skills: names, agents: [...agents], status: "failed", message: `exit ${code}: ${tail}` });
+      const noMatch = /no (matching )?skills?\b|not found|nothing to remove/i.test(blob);
+      void verifyAndFinish(exitCode, tail, noMatch);
     });
   });
 }
@@ -583,19 +751,36 @@ function removeOne(names: string[], agents: readonly AgentId[]): Promise<SkillRe
 // Remove specific skills (by name) from specific agents — the skill-cohort side of
 // `syncthis plugin rm`. Names are slug-validated (a leading "-" would be read as a
 // flag by the skills CLI) and deduped. One `npx skills remove` call covers every
-// (name, agent) pair. A no-op input (no names or no agents) returns "skipped"
-// without shelling out.
+// (name, agent) pair, then a fresh `skills list -g --json` read verifies each
+// selected agent. A no-op input (no names or no agents) returns "skipped" without
+// shelling out.
 export async function removeSkillNames(
   names: string[],
   agents: readonly AgentId[],
   opts: { dryRun?: boolean } = {},
 ): Promise<SkillRemoveResult> {
   const safe = [...new Set(names)].filter((n) => isSafeSkillName(n)).sort();
-  if (safe.length === 0 || agents.length === 0) {
-    return { skills: [], agents: [...agents], status: "skipped", message: "nothing to remove" };
+  const requestedAgents = [...new Set(agents)];
+  if (safe.length === 0 || requestedAgents.length === 0) {
+    return { skills: [], agents: requestedAgents, status: "skipped", results: [], message: "nothing to remove" };
   }
-  if (opts.dryRun) return { skills: safe, agents: [...agents], status: "removed", message: "dry-run" };
-  return removeOne(safe, agents);
+  if (opts.dryRun) {
+    return {
+      skills: safe,
+      agents: requestedAgents,
+      status: "removed",
+      results: requestedAgents.map((agent) => ({
+        agent,
+        removed: safe,
+        remaining: [],
+        verified: false,
+        status: "removed",
+        message: "dry-run",
+      })),
+      message: "dry-run",
+    };
+  }
+  return removeOne(safe, requestedAgents);
 }
 
 // Surface skills bundled inside Claude's installed plugins to the skill-cohort

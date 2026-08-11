@@ -3,7 +3,7 @@ import {
   validateLocalPluginSource,
   type ValidatedPluginRoot,
 } from "./local-source.ts";
-import { assertSafeIdentifier, parsePluginId, run } from "./shell.ts";
+import { assertSafeIdentifier, openPluginsArgs, parsePluginId, run } from "./shell.ts";
 import type {
   PluginAdapter,
   PluginAdapterRead,
@@ -260,7 +260,7 @@ export const claudePluginAdapter: PluginAdapter = {
     }
     if (opts.dryRun) return { agent: "claude-code", target, status: "installed", message: "dry-run" };
     const res = standaloneSource
-      ? await run("npx", ["plugins", "add", standaloneSource, "--target", PLUGINS_TARGET, "-y"], {
+      ? await run("npx", openPluginsArgs(["add", standaloneSource, "--target", PLUGINS_TARGET, "-y"]), {
           timeoutMs: INSTALL_TIMEOUT_MS,
         })
       : await run("claude", ["plugin", "install", "--yes", "--", target], { timeoutMs: INSTALL_TIMEOUT_MS });
@@ -269,7 +269,7 @@ export const claudePluginAdapter: PluginAdapter = {
         agent: "claude-code",
         target,
         status: "failed",
-        message: standaloneSource ? "`npx plugins` not found on PATH" : "claude CLI not found",
+        message: standaloneSource ? "`npx -y plugins@1.3.4` not found on PATH" : "claude CLI not found",
       };
     }
     if (res.timedOut) {

@@ -15,9 +15,22 @@ export type ShellResult = {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const TIMEOUT_KILL_GRACE_MS = 250;
 
+// Open Plugins is the vercel-labs/plugins CLI. Keep its package and provenance
+// explicit: bare `npx plugins` would resolve whatever version happens to be latest,
+// and omitting npx's `-y` would make a first-run install interactive
+// on the machine, changing target discovery and installation semantics underneath
+// a reproducible sync operation.
+export const OPEN_PLUGINS_PACKAGE = "plugins@1.3.4";
+export const OPEN_PLUGINS_REPOSITORY = "https://github.com/vercel-labs/plugins";
+
+export function openPluginsArgs(args: readonly string[]): string[] {
+  return ["-y", OPEN_PLUGINS_PACKAGE, ...args];
+}
+
 // Run a subprocess with no shell (args are passed array-style, so a value can
 // never be re-interpreted as a flag or shell metacharacter) on plain Node's
-// child_process, so the bundled CLI runs under Node without Bun.
+// child_process, so the bundled CLI runs under Node without Bun. Open Plugins
+// callers use openPluginsArgs below to keep the upstream package pinned.
 export function run(cmd: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<ShellResult> {
   const display = [cmd, ...args].join(" ");
   return new Promise((resolve) => {

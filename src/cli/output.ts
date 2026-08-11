@@ -18,6 +18,8 @@ const GLYPHS: Record<RowStatus, string> = {
   missing: yellow("?"),
   invalid: red("✗"),
   failed: red("✗"),
+  partial: yellow("~"),
+  blocked: red("✗"),
 };
 
 export function row(status: RowStatus, label: string, path: string, message?: string) {

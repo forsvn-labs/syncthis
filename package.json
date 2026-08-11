@@ -1,7 +1,7 @@
 {
   "name": "@hungv47/syncthis",
-  "version": "0.18.0",
-  "description": "Install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
+  "version": "0.19.0",
+  "description": "Plugins Fleet — install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
   "type": "module",
   "license": "MIT",
   "author": "Le Vinh Hung <levinhhungg@gmail.com>",
@@ -15,6 +15,7 @@
   },
   "keywords": [
     "plugins",
+    "plugins-fleet",
     "plugin-sync",
     "sync",
     "claude",

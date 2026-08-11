@@ -518,13 +518,35 @@ export function printUninstallApplied(
   }
   if (report.skillResult) {
     const result = report.skillResult;
+    const removedItems = result.results.reduce((count, target) => count + target.removed.length, 0);
+    const removedAgents = result.results.filter((target) => target.removed.length > 0).length;
+    const remainingTargets = result.results
+      .filter((target) => target.remaining.length > 0)
+      .map((target) => `${target.agent}: ${target.remaining.join(", ")}`);
     if (result.status === "removed") {
-      removed += result.skills.length;
+      removed += removedItems;
       row(
         "synced",
         "plugin-reach",
         "",
-        `removed ${result.skills.length} bundled item(s) from ${result.agents.length} agent(s)`,
+        `removed ${removedItems} bundled item(s) from ${removedAgents} agent(s)`,
+      );
+    } else if (result.status === "partial") {
+      removed += removedItems;
+      failed += 1;
+      row(
+        "partial",
+        "plugin-reach",
+        "",
+        `partial removal: ${removedItems} item(s) removed; remaining — ${remainingTargets.join("; ") || "fresh verification unavailable"}`,
+      );
+    } else if (result.status === "blocked") {
+      failed += 1;
+      row(
+        "blocked",
+        "plugin-reach",
+        "",
+        neutralPluginText(result.message, "plugin reach removal was blocked by verification"),
       );
     } else if (result.status === "skipped") {
       skipped += 1;
@@ -532,7 +554,7 @@ export function printUninstallApplied(
     } else {
       failed += 1;
       row(
-        "failed",
+        "blocked",
         "plugin-reach",
         "",
         neutralPluginText(result.message, "plugin reach removal failed"),

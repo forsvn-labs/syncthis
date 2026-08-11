@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudePluginAdapter } from "../src/plugins/claude.ts";
 import { codexPluginAdapter, planCodexPluginInstall } from "../src/plugins/codex.ts";
+import {
+  OPEN_PLUGINS_PACKAGE,
+  OPEN_PLUGINS_REPOSITORY,
+  openPluginsArgs,
+} from "../src/plugins/shell.ts";
 
 let workDir: string;
 let originalHome: string | undefined;
@@ -120,7 +125,7 @@ function mktTable(rows: [name: string, root: string][]): string {
 }
 
 // Fakes for the --provision path: a `codex` whose `plugin list` gains the plugin
-// only AFTER fake `npx plugins add` drops a sentinel — exercising the
+// only AFTER fake `npx plugins@1.3.4 add` drops a sentinel — exercising the
 // provision → re-read → install chain.
 async function installProvisionFakes(
   name: string,
@@ -165,20 +170,30 @@ exit 0
 `;
   await writeFile(join(binDir, "codex"), codex);
   await chmod(join(binDir, "codex"), 0o755);
-  // On `plugins add`: succeed (drop sentinel so the next `plugin list` shows it),
+  // On pinned Open Plugins `add`: succeed (drop sentinel so the next `plugin list` shows it),
   // or, when npxFail is set, emit stderr and exit non-zero without provisioning.
   const addBranch = opts.npxFail
     ? `echo "${opts.npxFail.stderr}" >&2; exit ${opts.npxFail.exit}`
     : `touch ${sentinel}; exit 0`;
   const npx = `#!/bin/sh
 echo "npx $@" >> ${invocationsFile}
-if [ "$1 $2" = "plugins add" ]; then ${addBranch}; fi
+if [ "$2 $3" = "plugins@1.3.4 add" ]; then ${addBranch}; fi
 exit 0
 `;
   await writeFile(join(binDir, "npx"), npx);
   await chmod(join(binDir, "npx"), 0o755);
   process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 }
+
+describe("Open Plugins invocation", () => {
+  test("pins the package and records its upstream provenance", () => {
+    expect(OPEN_PLUGINS_PACKAGE).toBe("plugins@1.3.4");
+    expect(OPEN_PLUGINS_REPOSITORY).toBe("https://github.com/vercel-labs/plugins");
+    expect(openPluginsArgs(["add", "owner/repo"])).toEqual([
+      "-y", "plugins@1.3.4", "add", "owner/repo",
+    ]);
+  });
+});
 
 describe("claude installPlugin", () => {
   test("returns 'present' when plugin is already installed, does NOT shell out", async () => {
@@ -236,7 +251,7 @@ describe("claude installPlugin", () => {
     await writeFile(join(source, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "foo" }));
     await installFakeCli("claude", JSON.stringify([]));
     await installFakeNpx(`
-if [ "$1 $2" = "plugins add" ]; then
+if [ "$2 $3" = "plugins@1.3.4 add" ]; then
   mkdir -p "${join(workDir, ".claude", "plugins")}"
   printf '{"plugins":{"foo@plugins-cli":[{"enabled":true,"installPath":"${source}"}]}}' > "${installed}"
   exit 0
@@ -250,7 +265,7 @@ exit 1`);
     });
 
     expect(res.status).toBe("installed");
-    expect(await readInvocations()).toContain(`npx plugins add ${await realpath(source)} --target claude-code -y`);
+    expect(await readInvocations()).toContain(`npx -y plugins@1.3.4 add ${await realpath(source)} --target claude-code -y`);
   });
 
   test("rejects a relative standalone artifact before invoking an installer", async () => {
@@ -264,7 +279,7 @@ exit 1`);
 
     expect(res.status).toBe("failed");
     expect(res.message).toMatch(/absolute/i);
-    expect((await readInvocations()).some((line) => line.startsWith("npx plugins add"))).toBe(false);
+    expect((await readInvocations()).some((line) => line.startsWith("npx -y plugins@1.3.4 add"))).toBe(false);
   });
 
   test("rejects unsafe plugin names before invoking CLI", async () => {
@@ -419,24 +434,24 @@ describe("codex installPlugin", () => {
     expect(invocations.some((l) => /plugin add/.test(l))).toBe(false);
   });
 
-  test("provision: registers the marketplace via npx plugins then installs", async () => {
+  test("provision: registers the marketplace via pinned Open Plugins then installs", async () => {
     await installProvisionFakes("foo");
     const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "acme/foo" });
     expect(res.status).toBe("installed");
     expect(res.target).toBe("foo@plugins-cli");
     const inv = await readInvocations();
-    expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
+    expect(inv.some((l) => l.trim() === "npx -y plugins@1.3.4 add acme/foo --target codex -y")).toBe(true);
     expect(inv.some((l) => l.trim() === "codex plugin add -- foo@plugins-cli")).toBe(true);
   });
 
-  test("provision: a failed `npx plugins add` is reported as failed with the cause", async () => {
+  test("provision: a failed `npx -y plugins@1.3.4 add` is reported as failed with the cause", async () => {
     await installProvisionFakes("foo", { npxFail: { exit: 1, stderr: "repo not found" } });
     const res = await codexPluginAdapter.installPlugin!("foo", { dryRun: false, provision: true, sourceRepo: "acme/foo" });
     expect(res.status).toBe("failed");
     expect(res.message).toContain("provision failed");
     expect(res.message).toContain("repo not found");
     const inv = await readInvocations();
-    expect(inv.some((l) => l.startsWith("npx plugins add"))).toBe(true);
+    expect(inv.some((l) => l.startsWith("npx -y plugins@1.3.4 add"))).toBe(true);
     // must not attempt the native install after the provision errored
     expect(inv.some((l) => /codex plugin add/.test(l))).toBe(false);
   });
@@ -449,7 +464,7 @@ describe("codex installPlugin", () => {
     expect(res.message).toContain("no usable source repo");
     expect(res.message).not.toContain("retry with --provision");
     const inv = await readInvocations();
-    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+    expect(inv.some((l) => /npx -y plugins@1\.3\.4 add/.test(l))).toBe(false);
   });
 
   test("provision set but no source repo for the marketplace: clear skip, no npx", async () => {
@@ -458,7 +473,7 @@ describe("codex installPlugin", () => {
     expect(res.status).toBe("skipped");
     expect(res.message).toContain("no usable source repo");
     const inv = await readInvocations();
-    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+    expect(inv.some((l) => /npx -y plugins@1\.3\.4 add/.test(l))).toBe(false);
   });
 
   test("provision disabled (--no-provision): stays skipped even with a sourceRepo, no npx", async () => {
@@ -467,7 +482,7 @@ describe("codex installPlugin", () => {
     expect(res.status).toBe("skipped");
     expect(res.message).toContain("provisioning disabled");
     const inv = await readInvocations();
-    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+    expect(inv.some((l) => /npx -y plugins@1\.3\.4 add/.test(l))).toBe(false);
     // No provision attempted → no skills-fallback repo handed back.
     expect(res.skillsFallbackRepo).toBeUndefined();
   });
@@ -499,7 +514,7 @@ exit 0
     await chmod(join(binDir, "codex"), 0o755);
     const npx = `#!/bin/sh
 echo "npx $@" >> ${invocationsFile}
-if [ "$1 $2" = "plugins add" ]; then touch ${sentinel}; exit 0; fi
+if [ "$2 $3" = "plugins@1.3.4 add" ]; then touch ${sentinel}; exit 0; fi
 exit 0
 `;
     await writeFile(join(binDir, "npx"), npx);
@@ -512,7 +527,7 @@ exit 0
     expect(res.skillsFallbackRepo).toBeUndefined();
     const inv = await readInvocations();
     // It provisioned, but never tried `codex plugin add foo@...` (foo never resolved).
-    expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
+    expect(inv.some((l) => l.trim() === "npx -y plugins@1.3.4 add acme/foo --target codex -y")).toBe(true);
     expect(inv.some((l) => /codex plugin add/.test(l))).toBe(false);
   });
 
@@ -609,7 +624,7 @@ exit 0
     expect(res.message).toMatch(/positively contains skills/i);
     const inv = await readInvocations();
     // It DID provision (the source repo was registered)...
-    expect(inv.some((l) => l.trim() === "npx plugins add acme/foo --target codex -y")).toBe(true);
+    expect(inv.some((l) => l.trim() === "npx -y plugins@1.3.4 add acme/foo --target codex -y")).toBe(true);
     // ...but never ran a native `codex plugin add` (nothing exposes it).
     expect(inv.some((l) => /codex plugin add/.test(l))).toBe(false);
   });
@@ -728,7 +743,7 @@ exit 0
     const inv = await readInvocations();
     expect(inv.some((l) => l.trim() === `codex plugin marketplace add ${clone}`)).toBe(true);
     expect(inv.some((l) => l.trim() === "codex plugin add -- impeccable@impeccable")).toBe(true);
-    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+    expect(inv.some((l) => /npx -y plugins@1\.3\.4 add/.test(l))).toBe(false);
   });
 
   test("uses a declared Codex-safe local identity for a dotted source identity", async () => {
@@ -749,7 +764,7 @@ exit 0
     const inv = await readInvocations();
     expect(inv.some((l) => l.trim() === `codex plugin marketplace add ${clone}`)).toBe(true);
     expect(inv.some((l) => l.trim() === "codex plugin add -- github-com-owner-tool@url-tools")).toBe(true);
-    expect(inv.some((l) => /npx plugins add/.test(l))).toBe(false);
+    expect(inv.some((l) => /npx -y plugins@1\.3\.4 add/.test(l))).toBe(false);
   });
 
   test("reuses an already-registered marketplace (by root), does not re-add", async () => {
