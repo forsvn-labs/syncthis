@@ -1,11 +1,13 @@
 import { dim, green, red, row, yellow } from "./output.ts";
+import {
+  uninstallClaudePolicy,
+  uninstallPreviewRows,
+  uninstallResultRows,
+  uninstallTargetLabel,
+} from "./uninstall-presentation.ts";
 
-export function neutralPluginText(value: unknown, fallback = "plugin reach unavailable"): string {
-  return String(value ?? fallback)
-    .replace(/\bnpx\b/gi, "plugin wrapper")
-    .replace(/\bskills?\b/gi, "plugin content")
-    .replace(/\bmcp\b/gi, "plugin wrapper");
-}
+export { neutralPluginText } from "./neutral-text.ts";
+import { neutralPluginText } from "./neutral-text.ts";
 
 export function printMirrorPreview(report: import("../plugins/mirror.ts").MirrorReport) {
   console.log(`Mirror plugins from ${green(report.from)} → every other agent (additive):`);
@@ -377,106 +379,86 @@ export function printPluginAdd(
   return failed;
 }
 
-export function printPluginOverview(
+export async function printPluginOverview(
   overview: import("../plugins/overview.ts").PluginOverview,
 ) {
+  const { renderPluginOverview } = await import("../plugins/overview.ts");
   console.log("Plugins across your agents:\n");
-  for (const result of overview.native) {
-    if (result.error) {
-      row("invalid", result.agent, result.configPath, neutralPluginText(result.error));
-      continue;
-    }
-    if (!result.exists) {
-      row("missing", result.agent, result.configPath, "no config");
-      continue;
-    }
-    row("ok", result.agent, result.configPath, `${result.plugins.length} plugin(s)`);
-    for (const plugin of result.plugins) {
-      const marketplace = plugin.marketplace ? dim(`@${plugin.marketplace}`) : "";
-      const version = plugin.version ? dim(` v${plugin.version}`) : "";
-      const enabled = plugin.enabled === false ? yellow(" (disabled)") : "";
-      console.log(`      ${dim("·")} ${plugin.name}${marketplace}${version}${enabled}`);
-    }
-  }
-  row(
-    "missing",
-    "cursor",
-    "~/.cursor",
-    "write-only plugin target — state isn't readable",
-  );
+  for (const line of renderPluginOverview(overview)) console.log(`  ${line}`);
 }
 
+// CLI adapter for the canonical uninstall preview rows. The row policy lives in
+// uninstall-presentation.ts; only color and layout dialect live here.
 export function printUninstallPreview(
   report: import("../plugins/uninstall.ts").UninstallReport,
 ) {
   console.log(`Uninstall ${report.plugins.map((plugin) => green(plugin)).join(", ")}:`);
-  for (const target of report.native) {
-    const name = target.marketplace
-      ? `${target.plugin}@${target.marketplace}`
-      : target.plugin;
-    if (target.unreadable) {
-      row(
-        "invalid",
-        target.agent,
-        "",
-        `can't read plugins: ${neutralPluginText(target.unreadable)}`,
-      );
-    } else if (target.present) {
-      console.log(`  ${red("-")} ${target.agent.padEnd(14)} ${name} ${dim("(native plugin)")}`);
-    } else {
-      console.log(`  ${dim("·")} ${target.agent.padEnd(14)} ${dim(`${name} not installed`)}`);
+  const rowOf = row;
+  for (const row of uninstallPreviewRows(report)) {
+    switch (row.kind) {
+      case "scope":
+        break;
+      case "native-remove": {
+        const name = uninstallTargetLabel(row.plugin, row.marketplace);
+        console.log(`  ${red("-")} ${row.agent.padEnd(14)} ${name} ${dim("(native plugin)")}`);
+        break;
+      }
+      case "native-absent": {
+        const name = uninstallTargetLabel(row.plugin, row.marketplace);
+        console.log(`  ${dim("·")} ${row.agent.padEnd(14)} ${dim(`${name} not installed`)}`);
+        break;
+      }
+      case "native-blocked":
+        rowOf("invalid", row.agent, "", `can't read plugins: ${neutralPluginText(row.reason)}`);
+        break;
+      case "skills-remove":
+        console.log(
+          `  ${red("-")} ${"plugin-reach".padEnd(14)} ${red(`${row.names.length}`)} bundled item(s) from ${row.agents.length} agent(s)`,
+        );
+        console.log(`      ${dim(`names:  ${row.names.join(", ")}`)}`);
+        console.log(`      ${dim(`agents: ${row.agents.join(", ")}`)}`);
+        break;
+      case "skills-out-of-scope":
+        console.log(
+          `  ${dim("·")} ${"plugin-reach".padEnd(14)} ${dim("bundled content exists, but none of the scoped agents hold it")}`,
+        );
+        break;
+      case "skills-kept":
+        console.log(
+          dim(`  kept (still provided by another installed plugin): ${row.names.join(", ")}`),
+        );
+        break;
+      case "mcp-blocked":
+        rowOf("invalid", row.agent, "", `plugin wrapper: can't read target: ${neutralPluginText(row.reason)}`);
+        break;
+      case "mcp-remove": {
+        const count = row.names.length;
+        console.log(
+          `  ${red("-")} ${row.agent.padEnd(14)} ${red(`${count}`)} bundled wrapper item(s): ${row.names.join(", ")}`,
+        );
+        break;
+      }
+      case "mcp-kept":
+        console.log(
+          dim(`  kept wrapper items (still provided by another installed plugin): ${row.names.join(", ")}`),
+        );
+        break;
+      case "mcp-conflict":
+        rowOf("drift", row.agent, "", `wrapper conflict(s) left untouched: ${row.names.join(", ")}`);
+        break;
+      case "unsupported":
+        console.log(
+          `  ${dim("·")} ${row.agent.padEnd(14)} ${dim("can't uninstall here (write-only plugin target)")}`,
+        );
+        break;
+      case "ownership-blocked":
+        // The hard ownership block is rendered by the caller as a loud failure;
+        // the preview keeps the softer yellow note below.
+        break;
     }
   }
-  if (report.skills.names.length && report.skills.agents.length) {
-    console.log(
-      `  ${red("-")} ${"plugin-reach".padEnd(14)} ${red(`${report.skills.names.length}`)} bundled item(s) from ${report.skills.agents.length} agent(s)`,
-    );
-    console.log(`      ${dim(`names:  ${report.skills.names.join(", ")}`)}`);
-    console.log(`      ${dim(`agents: ${report.skills.agents.join(", ")}`)}`);
-  } else if (report.skills.names.length) {
-    console.log(
-      `  ${dim("·")} ${"plugin-reach".padEnd(14)} ${dim("bundled content exists, but none of the scoped agents hold it")}`,
-    );
-  }
-  if (report.skills.kept.length) {
-    console.log(
-      dim(`  kept (still provided by another installed plugin): ${report.skills.kept.join(", ")}`),
-    );
-  }
-  for (const target of report.mcp) {
-    if (target.unreadable) {
-      row(
-        "invalid",
-        target.agent,
-        "",
-        `plugin wrapper: can't read target: ${neutralPluginText(target.unreadable)}`,
-      );
-    } else if (target.names.length) {
-      const count = target.names.length;
-      console.log(
-        `  ${red("-")} ${target.agent.padEnd(14)} ${red(`${count}`)} bundled wrapper item(s): ${target.names.join(", ")}`,
-      );
-    }
-    if (target.kept.length) {
-      console.log(
-        dim(`  kept wrapper items (still provided by another installed plugin): ${target.kept.join(", ")}`),
-      );
-    }
-    if (target.conflicts.length) {
-      row(
-        "drift",
-        target.agent,
-        "",
-        `wrapper conflict(s) left untouched: ${target.conflicts.join(", ")}`,
-      );
-    }
-  }
-  for (const agent of report.unsupportedAgents) {
-    console.log(
-      `  ${dim("·")} ${agent.padEnd(14)} ${dim("can't uninstall here (write-only plugin target)")}`,
-    );
-  }
-  if (report.claudeReadError && report.skillScope.length) {
+  const ownership = uninstallClaudePolicy(report);
+  if (ownership.unreadable && report.skillScope.length) {
     console.log(
       yellow(
         `  ! couldn't read Claude's plugins (${neutralPluginText(report.claudeReadError)}) — bundled content on ${report.skillScope.join(", ")} was left in place`,
@@ -485,122 +467,89 @@ export function printUninstallPreview(
   }
 }
 
+// CLI adapter for the canonical uninstall result rows. Counting and color live
+// here; classification lives in uninstall-presentation.ts.
 export function printUninstallApplied(
   report: import("../plugins/uninstall.ts").UninstallReport,
 ): number {
+  const rowOf = row;
   let removed = 0;
   let absent = 0;
   let skipped = 0;
   let failed = 0;
-  for (const result of report.nativeResults ?? []) {
-    if (result.status === "uninstalled") {
-      removed += 1;
-      row("synced", result.agent, result.target, "uninstalled");
-    } else if (result.status === "absent") {
-      absent += 1;
-    } else if (result.status === "skipped") {
-      skipped += 1;
-      row(
-        "skipped",
-        result.agent,
-        result.target,
-        neutralPluginText(result.message, "skipped"),
-      );
-    } else {
-      failed += 1;
-      row(
-        "failed",
-        result.agent,
-        result.target,
-        neutralPluginText(result.message, "plugin uninstall failed"),
-      );
-    }
-  }
-  if (report.skillResult) {
-    const result = report.skillResult;
-    const removedItems = result.results.reduce((count, target) => count + target.removed.length, 0);
-    const removedAgents = result.results.filter((target) => target.removed.length > 0).length;
-    const remainingTargets = result.results
-      .filter((target) => target.remaining.length > 0)
-      .map((target) => `${target.agent}: ${target.remaining.join(", ")}`);
-    if (result.status === "removed") {
-      removed += removedItems;
-      row(
-        "synced",
-        "plugin-reach",
-        "",
-        `removed ${removedItems} bundled item(s) from ${removedAgents} agent(s)`,
-      );
-    } else if (result.status === "partial") {
-      removed += removedItems;
-      failed += 1;
-      row(
-        "partial",
-        "plugin-reach",
-        "",
-        `partial removal: ${removedItems} item(s) removed; remaining — ${remainingTargets.join("; ") || "fresh verification unavailable"}`,
-      );
-    } else if (result.status === "blocked") {
-      failed += 1;
-      row(
-        "blocked",
-        "plugin-reach",
-        "",
-        neutralPluginText(result.message, "plugin reach removal was blocked by verification"),
-      );
-    } else if (result.status === "skipped") {
-      skipped += 1;
-      row("skipped", "plugin-reach", "", neutralPluginText(result.message, "skipped"));
-    } else {
-      failed += 1;
-      row(
-        "blocked",
-        "plugin-reach",
-        "",
-        neutralPluginText(result.message, "plugin reach removal failed"),
-      );
-    }
-  }
-  for (const result of report.mcpResults ?? []) {
-    if (result.status === "failed") {
-      failed += 1;
-      row(
-        "failed",
-        result.agent,
-        "",
-        `plugin wrapper: ${neutralPluginText(result.message, "failed")}`,
-      );
-    } else if (result.status === "synced") {
-      removed += result.removed.length;
-      row(
-        "synced",
-        result.agent,
-        "",
-        `removed ${result.removed.length} bundled wrapper item(s): ${result.removed.join(", ")}`,
-      );
-    } else if (result.status === "skipped") {
-      skipped += 1;
-      row(
-        "skipped",
-        result.agent,
-        "",
-        `plugin wrapper: ${neutralPluginText(result.message, "skipped")}`,
-      );
-    } else if (result.message) {
-      row(
-        "unchanged",
-        result.agent,
-        "",
-        `plugin wrapper: ${neutralPluginText(result.message)}`,
-      );
-    }
-    if (result.conflicts.length) {
-      row(
-        "drift",
-        result.agent,
-        "",
-        `wrapper conflict(s) left untouched: ${result.conflicts.join(", ")}`,
-      );
+  const skillRemovedRows: Array<{ agent: string; names: string[] }> = [];
+  const skillRemainingRows: Array<{ agent: string; names: string[] }> = [];
+  for (const row of uninstallResultRows(report)) {
+    switch (row.kind) {
+      case "native-removed":
+        removed += 1;
+        rowOf("synced", row.agent, row.target, "uninstalled");
+        break;
+      case "native-absent":
+        absent += 1;
+        break;
+      case "native-partial":
+        skipped += 1;
+        rowOf("skipped", row.agent, row.target, neutralPluginText(row.reason, "skipped"));
+        break;
+      case "native-blocked":
+        failed += 1;
+        rowOf("failed", row.agent, row.target, neutralPluginText(row.reason, "plugin uninstall failed"));
+        break;
+      case "skill-item-removed":
+        skillRemovedRows.push(row);
+        break;
+      case "skill-item-remaining":
+        skillRemainingRows.push(row);
+        break;
+      case "skill-status": {
+        const removedItems = skillRemovedRows.reduce((count, target) => count + target.names.length, 0);
+        const removedAgents = skillRemovedRows.length;
+        const remainingTargets = skillRemainingRows.map(
+          (target) => `${target.agent}: ${target.names.join(", ")}`,
+        );
+        if (row.status === "removed") {
+          removed += removedItems;
+          rowOf("synced", "plugin-reach", "", `removed ${removedItems} bundled item(s) from ${removedAgents} agent(s)`);
+        } else if (row.status === "partial") {
+          removed += removedItems;
+          failed += 1;
+          rowOf("partial", "plugin-reach", "", `partial removal: ${removedItems} item(s) removed; remaining — ${remainingTargets.join("; ") || "fresh verification unavailable"}`);
+        } else if (row.status === "blocked") {
+          failed += 1;
+          rowOf("blocked", "plugin-reach", "", neutralPluginText(row.message, "plugin reach removal was blocked by verification"));
+        } else if (row.status === "skipped") {
+          skipped += 1;
+          rowOf("skipped", "plugin-reach", "", neutralPluginText(row.message, "skipped"));
+        } else {
+          failed += 1;
+          rowOf("blocked", "plugin-reach", "", neutralPluginText(row.message, "plugin reach removal failed"));
+        }
+        break;
+      }
+      case "mcp-removed":
+        removed += row.names.length;
+        rowOf("synced", row.agent, "", `removed ${row.names.length} bundled wrapper item(s): ${row.names.join(", ")}`);
+        break;
+      case "mcp-blocked":
+        failed += 1;
+        rowOf("failed", row.agent, "", `plugin wrapper: ${neutralPluginText(row.reason, "failed")}`);
+        break;
+      case "mcp-skipped":
+        skipped += 1;
+        rowOf("skipped", row.agent, "", `plugin wrapper: ${neutralPluginText(row.reason, "skipped")}`);
+        break;
+      case "mcp-note":
+        rowOf("unchanged", row.agent, "", `plugin wrapper: ${neutralPluginText(row.message)}`);
+        break;
+      case "mcp-conflict":
+        rowOf("drift", row.agent, "", `wrapper conflict(s) left untouched: ${row.names.join(", ")}`);
+        break;
+      case "unsupported":
+        break;
+      case "ownership-blocked":
+        // Surfaced loudly by the bin caller via the shared Claude policy.
+        break;
     }
   }
   const parts = [

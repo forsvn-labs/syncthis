@@ -17,9 +17,9 @@ function readPackageVersion(): string {
 
 const VERSION = readPackageVersion();
 
-// Keep the Plugins Fleet wordmark as a static string so the published Node bundle
+// Keep the Syncthis wordmark as a static string so the published Node bundle
 // has no runtime font-file dependency. The gradient supplies the visual treatment.
-const WORDMARK = "PLUGINS FLEET";
+const WORDMARK = "SYNCTHIS";
 
 interface CommandRow {
   cmd: string;
@@ -35,8 +35,8 @@ export const COMMANDS: CommandRow[] = [
   { cmd: "syncthis sync", desc: "reconcile installed plugins everywhere" },
   { cmd: "syncthis plugins list", desc: "show readable plugin state" },
   { cmd: "syncthis plugins rm <name…> --all", desc: "guarded plugin removal" },
-  { cmd: "syncthis doctor", desc: "read-only plugin overview" },
-  { cmd: "syncthis update", desc: "update syncthis to latest" },
+  { cmd: "syncthis doctor", desc: "source and outcome diagnostics" },
+  { cmd: "syncthis update", desc: "update Syncthis to latest" },
   { cmd: "syncthis version", desc: "print the installed version" },
   { cmd: "syncthis help", desc: "plugin commands and outcomes" },
 ];
@@ -71,7 +71,7 @@ function Welcome() {
 
       <Box marginTop={1} marginLeft={2}>
         <Text dimColor>v{VERSION} · </Text>
-        <Text color="cyan">https://github.com/hungv47/syncthis</Text>
+        <Text color="cyan">https://github.com/forsvn-labs/syncthis</Text>
       </Box>
     </Box>
   );

@@ -36,11 +36,13 @@ describe("plugin-only public surfaces", () => {
   });
 
   test("interactive menu exposes only plugin actions and quit", () => {
-    expect(MAIN_MENU.map((item) => item.value)).toEqual(["sync", "list", "remove", "quit"]);
+    expect(MAIN_MENU.map((item) => item.value)).toEqual(["overview", "sync", "doctor", "remove", "update", "quit"]);
     expect(MAIN_MENU.map((item) => item.label)).toEqual([
-      "Plugins Fleet Sync",
-      "Plugins Fleet List",
-      "Plugins Fleet Remove",
+      "Plugin map",
+      "Sync plugins",
+      "Doctor",
+      "Remove plugins",
+      "Update Syncthis",
       "Quit",
     ]);
     expect(publicText(MAIN_MENU)).not.toMatch(FORBIDDEN_PUBLIC_TERMS);
@@ -51,14 +53,14 @@ describe("plugin-only public surfaces", () => {
     const description = typeof packageJson.description === "string" ? packageJson.description : "";
     const keywords = Array.isArray(packageJson.keywords) ? packageJson.keywords.join("\n") : "";
     expect(`${description}\n${keywords}`).not.toMatch(FORBIDDEN_PUBLIC_TERMS);
-    expect(description).toContain("Plugins Fleet");
-    expect(packageJson.keywords).toContain("plugins-fleet");
+    expect(description).toContain("Syncthis");
+    expect(packageJson.keywords).toContain("cross-agent-plugins");
   });
 
   test("README is plugin-only public documentation", () => {
     expect(readme).not.toMatch(FORBIDDEN_PUBLIC_TERMS);
     expect(readme).not.toMatch(HIDDEN_COMMAND_TERMS);
-    expect(readme).toContain("Plugins Fleet");
+    expect(readme).toContain("Syncthis");
     expect(readme).toContain("Compatibility note");
     expect(readme).toContain("syncthis plugins list");
     expect(readme).toContain("syncthis plugins rm");

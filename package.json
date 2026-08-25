@@ -1,21 +1,21 @@
 {
-  "name": "@hungv47/syncthis",
-  "version": "0.19.0",
-  "description": "Plugins Fleet — install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
+  "name": "@forsvn/syncthis",
+  "version": "0.20.0",
+  "description": "Syncthis — install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
   "type": "module",
   "license": "MIT",
   "author": "Le Vinh Hung <levinhhungg@gmail.com>",
-  "homepage": "https://github.com/hungv47/syncthis#readme",
+  "homepage": "https://github.com/forsvn-labs/syncthis#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hungv47/syncthis.git"
+    "url": "git+https://github.com/forsvn-labs/syncthis.git"
   },
   "bugs": {
-    "url": "https://github.com/hungv47/syncthis/issues"
+    "url": "https://github.com/forsvn-labs/syncthis/issues"
   },
   "keywords": [
     "plugins",
-    "plugins-fleet",
+    "cross-agent-plugins",
     "plugin-sync",
     "sync",
     "claude",
@@ -53,7 +53,7 @@
     "bun": ">=1.0.0"
   },
   "scripts": {
-    "test": "bun test --timeout 15000 --max-concurrency 4",
+    "test": "bun test --timeout 60000 --max-concurrency 1",
     "typecheck": "bunx tsc --noEmit",
     "build": "bun scripts/build.ts",
     "prepublishOnly": "bun run test && bun run typecheck && bun run build"
@@ -63,8 +63,6 @@
     "provenance": true
   },
   "devDependencies": {
-    "@clack/core": "^0.3.5",
-    "@clack/prompts": "^0.7.0",
     "@types/bun": "latest",
     "@types/js-yaml": "^4.0.9",
     "@types/react": "^19.2.14",

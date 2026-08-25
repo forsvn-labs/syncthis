@@ -47,7 +47,8 @@ Do not introduce `original/native`, `wrapper`, `reach-only`, or `failed` as prod
 bin/syncthis.ts              CLI dispatch; public core plus hidden compatibility aliases
 src/cli/help.ts              advertised help text
 src/cli/plugin-outcomes.ts   shared canonical plugin-target presentation for CLI and TUI
-src/tui.ts                   interactive Plugin Sync/List/Remove flows
+src/control-center.tsx       Ink control center for map/sync/doctor/remove/update
+src/tui.ts                   thin interactive entrypoint and shared sync-flow contract
 src/welcome.tsx              first-run public command rows
 src/sync.ts                  plugin-first reconciliation facade and internal lower-layer helpers
 src/plugins/inventory.ts     discovery from readable native registries and staged artifacts
@@ -65,7 +66,7 @@ src/adapters/                internal lower-layer config adapters, including pri
 
 Readable native plugin sources are Claude Code, Codex, GitHub Copilot, and Grok Build. Cursor is a write-only target and must never be reported as native. Prime Agent, Pi, and Cline are skill-backed adaptation targets; Cline's separate TypeScript plugin ABI is not Agent Plugins-native. Targets without a proven native ABI may receive private adaptations when the exact artifact supports them.
 
-`plugins add`, `plugins mirror`, and top-level `add`, `mirror`, and `run` remain callable compatibility paths, but are not advertised or used by the default workflow. Do not expand them as part of the plugin-first core. The default interactive Plugin Sync must call the same `runSync({ dryRun })` preview/apply contract as the CLI and must not add source/plugin/target selection or call `runPluginAdd`.
+`plugins add`, `plugins mirror`, and top-level `add`, `mirror`, and `run` remain callable compatibility paths, but are not advertised or used by the default workflow. Do not expand them as part of the plugin-first core. The Ink control center must call the same core services as the CLI: `runSync`, `runPluginUninstall`, and the self-update service. It must not call `runPluginAdd` or fork lifecycle logic into React state. Sync previews the complete discovered set before a separate confirmation step. Removal selects plugins, then an explicit all-or-agent scope, then previews before a separate confirmation step.
 
 Bundled implementation components remain allowed behind the projection boundary because plugins still need them internally. They must not appear as top-level products, public command groups, public statuses, or a second list of projected fragments. Use `src/cli/plugin-outcomes.ts` for user-facing sync output and sanitize secondary diagnostics with the existing neutral plugin wording.
 

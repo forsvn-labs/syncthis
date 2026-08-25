@@ -1,16 +1,23 @@
 # Changelog
 
-All notable changes to `@hungv47/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
+All notable changes to `@forsvn/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
+
+## [0.20.0] — 2026-08-25
+
+### Changed
+- **The product name is Syncthis everywhere again.** The package name, executable, repository URLs, configuration, environment variables, and backup identifiers remain compatible.
+- **The no-argument experience is now an Ink control center.** It maps native installations across readable agents and exposes preview-first sync, doctor, scoped removal, and self-update actions through the same core services as the CLI.
+- **Interactive writes now use explicit confirmation rails.** Sync, removal, and self-update each show their plan before a separate confirmation step; removal keeps exact plugin and agent scope visible.
 
 ## [0.19.0] — 2026-08-11
 
 ### Changed
-- **The product is now Plugins Fleet.** Public help, the interactive terminal, package metadata, README, and product contract use the new name while the `syncthis` executable, npm package, repository URLs, configuration, environment variables, and backup identifiers remain compatible.
+- **Plugin-first positioning was applied across the product.** Public help, the interactive terminal, package metadata, README, and product contract focus on the installed plugin as the only public object.
 - **Open Plugins provisioning is reproducible.** Cross-agent installs invoke the documented upstream package as `npx -y plugins@1.3.4` instead of resolving an unpinned latest version or prompting interactively.
 
 ### Fixed
 - **Pi and Cline plugin removal now reaches the selected agents.** Removal passes each real upstream target instead of the shared `universal` add target, which could exit successfully while leaving both agents unchanged.
-- **Removal success requires fresh per-agent verification.** Plugins Fleet reports `partial` or `blocked` when a selected target still contains the bundled skill or its post-remove state cannot be read, eliminating false-success removal reports.
+- **Removal success requires fresh per-agent verification.** Syncthis reports `partial` or `blocked` when a selected target still contains bundled plugin content or its post-remove state cannot be read, eliminating false-success removal reports.
 
 ## [0.18.0] — 2026-08-10
 
@@ -104,7 +111,7 @@ Includes everything in 0.14.1 (cross-agent plugin/skill identity hardening), whi
 ## [0.12.3] — 2026-06-02
 
 ### Added
-- **`syncthis update`.** Updates the global `@hungv47/syncthis` install to latest, using `npm install -g @hungv47/syncthis@latest` by default and Bun's global install when the current executable comes from Bun. Supports `--dry-run`.
+- **`syncthis update`.** Updates the global `@forsvn/syncthis` install to latest, using `npm install -g @forsvn/syncthis@latest` by default and Bun's global install when the current executable comes from Bun. Supports `--dry-run`.
 - **`syncthis version` / `--version` / `-v`.** Prints the installed package version directly.
 
 ### Fixed
@@ -217,7 +224,7 @@ Pre-launch hardening: runs on Node without Bun, idempotent for every transport, 
 - A bad CLI flag now exits `2` (usage error) instead of `1`, matching every other usage-error path.
 
 ### Changed
-- **Runs on Node ≥18 — no Bun required.** The CLI is bundled with `bun build --target=node` into a single self-contained `dist/syncthis.mjs` (Node shebang). `npx @hungv47/syncthis run` now works for Node-only users; the prior `.mjs` shim that hard-spawned `bun` (exit 127 without it) is gone. Bun is still the dev runtime.
+- **Runs on Node ≥18 — no Bun required.** The CLI is bundled with `bun build --target=node` into a single self-contained `dist/syncthis.mjs` (Node shebang). `npx @forsvn/syncthis run` now works for Node-only users; the prior `.mjs` shim that hard-spawned `bun` (exit 127 without it) is gone. Bun is still the dev runtime.
 - Subprocess and file I/O moved from `Bun.*` APIs to `node:child_process` / `node:fs` so the bundle is portable.
 - Timed-out shell-outs report `timed out after Ns` instead of a confusing negative/`-15` exit; the Codex `--provision` re-read failure is now reported as a failure with its cause, not a benign skip.
 

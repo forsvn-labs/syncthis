@@ -2,7 +2,7 @@
 
 ## What this codebase does
 
-`@hungv47/syncthis` (v0.2.0) is a local-only CLI (Bun/TypeScript) that mirrors MCP server configs across **11 AI coding agents**: Claude Code, Cursor, Codex, Gemini CLI, Kimi CLI, OpenCode, OpenClaw, Hermes, Windsurf, Antigravity, GitHub Copilot CLI. It mutates user-scope dotfiles in `$HOME` — the configs live at:
+`@forsvn/syncthis` (v0.2.0) is a local-only CLI (Bun/TypeScript) that mirrors MCP server configs across **11 AI coding agents**: Claude Code, Cursor, Codex, Gemini CLI, Kimi CLI, OpenCode, OpenClaw, Hermes, Windsurf, Antigravity, GitHub Copilot CLI. It mutates user-scope dotfiles in `$HOME` — the configs live at:
 
 - `~/.claude.json`, `~/.cursor/mcp.json`, `~/.codex/config.toml` (TOML), `~/.gemini/settings.json`
 - `~/.kimi/mcp.json`, `~/.gemini/antigravity/mcp_config.json`, `~/.copilot/mcp-config.json` (overridable via `$COPILOT_HOME`)

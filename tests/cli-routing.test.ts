@@ -59,8 +59,8 @@ describe("plugin-only public help", () => {
   test("top-level help exposes only the reliable plugin core", () => {
     const result = run(["help"]);
     expect(result.code).toBe(0);
-    expect(result.out).toContain("Plugins Fleet");
-    expect(result.out).toContain("Plugins Fleet is a user-facing rebrand; the syncthis CLI, npm package,");
+    expect(result.out).toContain("Syncthis");
+    expect(result.out).toContain("The npm package remains @forsvn/syncthis.");
     for (const command of [
       "syncthis sync",
       "syncthis plugins list",
@@ -88,7 +88,7 @@ describe("plugin-only public help", () => {
   test("plugin help stays within the public plugin surface", () => {
     const result = run(["plugins", "help"]);
     expect(result.code).toBe(0);
-    expect(result.out).toContain("Plugins Fleet");
+    expect(result.out).toContain("Syncthis");
     expect(result.out).toContain("syncthis plugins list");
     expect(result.out).toContain("syncthis plugins rm");
     expect(result.out).not.toContain("plugins mirror");
@@ -196,12 +196,14 @@ describe("plugin-only aliases", () => {
 });
 
 describe("doctor routing", () => {
-  test("doctor is the read-only plugin overview", async () => {
+  test("doctor renders read-only source and outcome diagnostics", async () => {
     await installPluginOverviewFixture();
     const result = run(["doctor"]);
-    expect(result.code).toBe(0);
-    expect(result.out).toContain("Plugins across your agents:");
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("Sources:");
+    expect(result.out).toContain("Synchronization preview");
     expect(result.out).toContain("foo");
+    expect(result.out).toContain("blocked");
     expect(result.out).not.toContain("coverage:");
     expect(result.out).not.toContain("server");
     expect(result.out).not.toMatch(FORBIDDEN_PUBLIC_TERMS);

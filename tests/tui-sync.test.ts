@@ -1,28 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { runPluginSyncFlow } from "../src/tui.ts";
-import type { PluginReconcileResult } from "../src/plugins/reconcile.ts";
-import { createArtifactKey } from "../src/plugins/artifact-key.ts";
-import type { SyncReport } from "../src/sync.ts";
+import {
+  handleControlCenterKey,
+  type ControlCenterSnapshot,
+} from "../src/cli/control-center-policy.ts";
+import { renderPluginSyncReport } from "../src/cli/plugin-outcomes.ts";
 
-function report(dryRun: boolean): SyncReport {
-  const result: PluginReconcileResult = {
-    artifactKey: createArtifactKey({ id: "flow-plugin", fixture: "tui-flow" }),
-    artifactId: "flow-plugin",
-    plugin: "flow-plugin",
-    agent: "codex",
-    nativeMode: "verified",
-    status: dryRun ? "would-install" : "installed",
-    intent: "install",
-    requestedName: "flow-plugin",
-    degradation: { eligible: false, skills: false, mcp: false },
-    outcome: "native",
-  };
+// The old src/tui.ts sync-flow contract, re-expressed against the pure screen
+// policy: preview first, explicit confirm, one apply, and never a second apply
+// offer after the result exists. Rendering uses the real shared report renderer.
+function report(dryRun: boolean) {
   return {
     ok: true,
     plugins: {
       dryRun,
       inventory: { artifacts: [], sources: [], errors: [] },
-      results: [result],
+      results: [],
       failures: [],
       hasFailures: false,
       hasChanges: true,
@@ -35,46 +27,65 @@ function report(dryRun: boolean): SyncReport {
       hasFailures: false,
       hasChanges: false,
     },
-    reads: [],
-    union: {},
-    conflicts: [],
-    writes: [],
+  } as const;
+}
+
+function snapshot(overrides: Partial<ControlCenterSnapshot> = {}): ControlCenterSnapshot {
+  return {
+    screen: "sync-preview",
+    cursor: 0,
+    offset: 0,
+    loading: false,
+    hasError: false,
+    menuLength: 6,
+    listLength: 0,
+    selectedCount: 0,
+    syncPreviewReady: true,
+    syncApplyAvailable: true,
+    removePreviewReady: false,
+    removeApplyAvailable: false,
+    updatePlanReady: false,
+    updateCompleted: false,
+    ...overrides,
   };
 }
 
-describe("interactive Plugin Sync orchestration", () => {
-  test("uses the unified runSync preview/apply contract without source or target selection", async () => {
-    const calls: boolean[] = [];
-    const lines: string[] = [];
-    const result = await runPluginSyncFlow({
-      runSync: async ({ dryRun }) => {
-        calls.push(dryRun);
-        return report(dryRun);
-      },
-      confirm: async () => true,
-      render: (syncReport) => [syncReport.plugins.dryRun ? "preview" : "applied"],
-      onLine: (line) => lines.push(line),
-    });
+describe("interactive sync flow policy", () => {
+  test("previews the complete set, confirms separately, applies once", () => {
+    const preview = report(true);
+    // The rendered preview is exactly what the shared renderer produces.
+    expect(renderPluginSyncReport(preview as never)).toContain("no installed plugins discovered");
 
-    expect(calls).toEqual([true, false]);
-    expect(lines).toEqual(["preview", "applied"]);
-    expect(result.applied?.plugins.results[0]?.outcome).toBe("native");
+    const tasks: string[] = [];
+    let screen = snapshot().screen;
+    const step = (input: string) => {
+      const command = handleControlCenterKey(snapshot({ screen }), { input });
+      if (command?.type === "run") tasks.push(command.task);
+      if (command?.type === "navigate") screen = command.screen;
+    };
+    step("a");
+    step("y");
+    expect(tasks).toEqual(["apply-sync"]);
+    // Apply runs from the confirm state; the component alone moves to the
+    // explicit result screen once the action returns.
+    expect(screen).toBe("sync-confirm");
   });
 
-  test("does not apply when the preview is declined", async () => {
-    const calls: boolean[] = [];
-    const result = await runPluginSyncFlow({
-      runSync: async ({ dryRun }) => {
-        calls.push(dryRun);
-        return report(dryRun);
-      },
-      confirm: async () => false,
-      render: () => [],
-      onLine: () => undefined,
-    });
+  test("declining the confirmation leaves the preview untouched", () => {
+    let screen = snapshot().screen;
+    const command = handleControlCenterKey(snapshot({ screen }), { input: "n" });
+    if (command?.type === "navigate") screen = command.screen;
+    expect(screen).toBe("sync-preview");
+  });
 
-    expect(calls).toEqual([true]);
-    expect(result.cancelled).toBe(true);
-    expect(result.applied).toBeUndefined();
+  test("the applied result cannot trigger a hidden reapply", () => {
+    const result = snapshot({ screen: "sync-result", syncApplyAvailable: true });
+    expect(handleControlCenterKey(result, { input: "a" })).toBeUndefined();
+    expect(handleControlCenterKey(result, { input: "y", return: true })).toBeUndefined();
+  });
+
+  test("non-TTY-style empty input never applies anything", () => {
+    expect(handleControlCenterKey(snapshot(), { input: "" })).toBeUndefined();
+    expect(handleControlCenterKey(snapshot({ screen: "sync-confirm" }), { input: "" })).toBeUndefined();
   });
 });

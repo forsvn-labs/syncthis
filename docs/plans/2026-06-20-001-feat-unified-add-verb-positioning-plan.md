@@ -4,13 +4,13 @@ type: feat
 date: 2026-06-20
 status: ready
 depth: standard
-target_repo: syncthis (hungv47/syncthis)
+target_repo: syncthis (forsvn-labs/syncthis)
 origin: "ce-brainstorm debate verdict 2026-06-20 (no host pivot; complete the loop around the plugin-propagation moat)"
 ---
 
 # feat: Unified auto-detecting `add` verb + plugin-propagation repositioning
 
-**Target repo:** `syncthis` (`hungv47/syncthis`). All paths below are relative to that repo root.
+**Target repo:** `syncthis` (`forsvn-labs/syncthis`). All paths below are relative to that repo root.
 
 ## Summary
 

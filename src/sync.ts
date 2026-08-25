@@ -43,6 +43,12 @@ export type SyncOptions = {
   onPluginSkillProgress?: (repo: string, i: number, total: number) => void;
   /** Test/control-plane injection; production defaults to the native reconciler. */
   reconcilePlugins?: (opts: RunPluginReconcileOptions) => Promise<PluginReconcileReport>;
+  /**
+   * Options for the plugin inventory read, e.g. pre-captured native adapter
+   * snapshots. Callers that already hold a native snapshot (doctor) reuse it
+   * here instead of triggering a second discovery pass.
+   */
+  inventoryOptions?: RunPluginReconcileOptions["inventoryOptions"];
   /** Optional content-addressed package store; production resolves a safe default. */
   storeRoot?: string;
   /** Test/control-plane injection; production defaults to targeted degradation. */
@@ -146,6 +152,7 @@ export async function runSync(opts: SyncOptions = {}): Promise<SyncReport> {
         dryRun,
         targets: opts.pluginTargets ?? pluginReconcileTargets(),
         storeRoot: opts.storeRoot ?? resolvePluginStoreRoot(),
+        ...(opts.inventoryOptions ? { inventoryOptions: opts.inventoryOptions } : {}),
       });
 
   const pluginDegradation = opts.skipPlugins || opts.skipBridge || opts.skipSkills

@@ -1,16 +1,16 @@
-# Plugins Fleet product contract
+# Syncthis product contract
 
-This document defines the public meaning of Plugins Fleet (`syncthis`). Plugins Fleet is a plugin-first sync, adaptation, and verification layer; it is not a collection of unrelated host-config managers.
+This document defines the public meaning of Syncthis. Syncthis is a plugin-first sync, adaptation, and verification layer; it is not a collection of unrelated host-config managers.
 
 ## Upstream relationship
 
-[Agent Plugins](https://agent-plugins.org/) is the canonical plugin model. Plugins Fleet adopts that model and begins at the portability boundary: a plugin is already installed or otherwise available through an authoritative client, and Plugins Fleet makes that plugin usable across other supported clients.
+[Agent Plugins](https://agent-plugins.org/) is the canonical plugin model. Syncthis adopts that model and begins at the portability boundary: a plugin is already installed or otherwise available through an authoritative client, and Syncthis makes that plugin usable across other supported clients.
 
-Plugins Fleet must not fork the Agent Plugins manifest, publish a competing registry, or redefine upstream installation semantics. Upstream plugin identity and contents remain authoritative; Plugins Fleet owns only cross-client discovery, source-independent packaging, target adaptation, reconciliation, verification, and reporting.
+Syncthis must not fork the Agent Plugins manifest, publish a competing registry, or redefine upstream installation semantics. Upstream plugin identity and contents remain authoritative; Syncthis owns only cross-client discovery, source-independent packaging, target adaptation, reconciliation, verification, and reporting.
 
 ## Compatibility note
 
-Plugins Fleet is a user-facing rebrand only. The executable remains `syncthis`, the npm package remains `@hungv47/syncthis`, repository URLs remain unchanged, and existing config paths, `SYNCTHIS_*` environment variables, and `.syncthis.bak` backup identifiers remain compatible.
+The executable remains `syncthis`, the npm package remains `@forsvn/syncthis`, repository URLs remain unchanged, and existing config paths, `SYNCTHIS_*` environment variables, and `.syncthis.bak` backup identifiers remain compatible.
 
 ## Public model
 
@@ -32,7 +32,7 @@ The detailed native and projection statuses remain available for diagnostics; th
 
 ## Fresh read-back requirement
 
-For every readable native target, an apply is incomplete until Plugins Fleet performs a fresh read from the target's authoritative plugin registry. The installer exit code is only an action result; it is not proof of activation. The post-apply read must identify the requested plugin or a verified canonical covering identity. If it does not, the outcome is blocked.
+For every readable native target, an apply is incomplete until Syncthis performs a fresh read from the target's authoritative plugin registry. The installer exit code is only an action result; it is not proof of activation. The post-apply read must identify the requested plugin or a verified canonical covering identity. If it does not, the outcome is blocked.
 
 Dry-run uses the target's preview contract where available and must not imply that an apply was verified. A target that cannot be read remains explicitly write-only or unsupported according to its registered ABI, never silently promoted to native.
 
@@ -53,13 +53,13 @@ Native support is target-specific. A target enters the verified native registry 
 
 A target without a proven native ABI may receive a target-specific adaptation when the artifact supports it. That translation is scoped to the exact target and never changes the source plugin's identity or upgrades the target's status to native.
 
-Grok Build belongs in the verified registry because its CLI natively accepts Agent Plugin manifests and exposes list, install, enable, uninstall, and update operations. Plugins Fleet installs an exact local artifact when available, grants trust explicitly as part of the user-requested sync, enables the installed identity, and requires a fresh `grok plugin list --json` read before reporting `native`.
+Grok Build belongs in the verified registry because its CLI natively accepts Agent Plugin manifests and exposes list, install, enable, uninstall, and update operations. Syncthis installs an exact local artifact when available, grants trust explicitly as part of the user-requested sync, enables the installed identity, and requires a fresh `grok plugin list --json` read before reporting `native`.
 
 Prime Agent and Pi consume Agent Skills from the shared `~/.agents/skills` store but do not expose an Agent Plugin ABI. Cline exposes a separate TypeScript plugin ABI; that ABI is not interchangeable with Agent Plugins. These targets may therefore report `adapted` only when a plugin's skill payload is successfully surfaced, `partial` when only part of the payload lands, or `unsupported` when no compatible payload exists.
 
 ## Cursor limitation
 
-Cursor can receive a plugin push, but Plugins Fleet cannot read a reliable installed-plugin list from Cursor. Cursor is therefore write-only and unverified. Lists, diffs, and fresh-read guarantees do not claim Cursor activation; later operations must preserve that limitation instead of inventing observed state.
+Cursor can receive a plugin push, but Syncthis cannot read a reliable installed-plugin list from Cursor. Cursor is therefore write-only and unverified. Lists, diffs, and fresh-read guarantees do not claim Cursor activation; later operations must preserve that limitation instead of inventing observed state.
 
 ## Private translation boundary
 

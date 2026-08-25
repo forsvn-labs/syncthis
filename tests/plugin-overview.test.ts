@@ -2,7 +2,11 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildPluginOverview } from "../src/plugins/overview.ts";
+import {
+  buildPluginOverview,
+  overviewCounts,
+  renderPluginOverview,
+} from "../src/plugins/overview.ts";
 import { skillAgentLabelToId, listInstalledSkills } from "../src/skills.ts";
 
 let workDir: string;
@@ -125,6 +129,18 @@ describe("buildPluginOverview", () => {
     expect(o.native.find((r) => r.agent === "claude-code")?.plugins.map((p) => p.name)).toEqual(["foo"]);
     expect(o.native.find((r) => r.agent === "codex")?.plugins.map((p) => p.name)).toEqual(["bar"]);
     expect(JSON.stringify(o)).not.toContain("loose-copy");
+    expect(overviewCounts(o)).toEqual({
+      plugins: 2,
+      nativeInstalls: 2,
+      readableAgents: 3,
+      blockedAgents: 1,
+    });
+    const rendered = renderPluginOverview(o).join("\n");
+    expect(rendered).toContain("Plugin");
+    expect(rendered).toContain("Claude");
+    expect(rendered).toContain("foo@mkt");
+    expect(rendered).toContain("bar@mkt");
+    expect(rendered).toContain("Cursor is write-only");
   });
 
   test("does not depend on loose-resource inventory availability", async () => {
