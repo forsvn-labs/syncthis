@@ -1,6 +1,6 @@
 name: publish
 
-# Auto-publish @hungv47/syncthis to npm via OIDC Trusted Publishing (no token),
+# Auto-publish @forsvn/syncthis to npm via OIDC Trusted Publishing (no token),
 # then tag + create a matching GitHub Release. Keeps npm, git tags, and Releases
 # from drifting apart (they had — npm was at 0.9.x while Releases sat at v0.3.0).
 #
@@ -13,8 +13,8 @@ name: publish
 # real version bump always touches package.json, so it always triggers.
 #
 # ONE-TIME SETUP (required before the first auto-publish): configure the npm
-# Trusted Publisher at https://www.npmjs.com/package/@hungv47/syncthis/access
-#   Organization or user = hungv47 | Repository = syncthis
+# Trusted Publisher at https://www.npmjs.com/package/@forsvn/syncthis/access
+#   Organization or user = forsvn-labs | Repository = syncthis
 #   Workflow filename = publish.yml (filename only) | Environment = (blank)
 #   Allowed action = npm publish
 # Do NOT add an NPM_TOKEN secret — OIDC needs none, and a stale token can shadow it.
