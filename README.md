@@ -16,21 +16,26 @@ syncthis sync --dry-run
 syncthis sync
 ```
 
-Running `syncthis` with no arguments opens the Ink control center. It maps native plugin state across readable agents, previews canonical target outcomes, and keeps every write behind an explicit action. A non-interactive invocation prints help.
+Running `syncthis` with no arguments opens the Ink plugin hub. It leads with what you already have: installed plugins across readable agents, with every write behind an explicit preview and confirmation. A non-interactive invocation prints help.
 
-The control center has five focused actions:
+The plugin hub has six focused actions:
 
-- **Plugin map** shows one cross-agent matrix from readable native registries. Unreadable agents stay blocked, and Cursor stays explicitly write-only.
+- **Installed plugins** shows one selectable list of installed plugins; opening a plugin shows its detail view — name and marketplace, per-readable-agent native state, enabled/disabled, version, config scope, and provenance/path when known. Unreadable agents stay blocked and Cursor stays explicitly write-only.
 - **Sync plugins** runs the same dry-run reconciliation as `syncthis sync --dry-run`, shows one canonical outcome per plugin-target, and requires an explicit apply key before writing.
+- **Configure plugins** enables or disables installed plugins per agent. It reuses the same guarded activation service as `syncthis plugins enable|disable`: choose plugins, pick all or exact agents, pick a Claude scope when Claude Code is the only target, then confirm from an authoritative preview with exact native commands.
 - **Doctor** combines source health, native state, and the synchronization preview in one read-only report.
 - **Remove plugins** requires plugin selection, an explicit all-or-agent scope, an exact preview, and a second confirmation key. Modified conflicts and content still owned by another plugin are kept.
 - **Update Syncthis** previews the exact package-manager command and target before running the same self-update service as the CLI.
+
+The hub inventories, syncs, adapts, configures, removes, diagnoses, and verifies installed plugins. It is not a registry or marketplace browser, and it never browses the internet for plugins.
 
 ## Public commands
 
 ```text
 syncthis sync [--dry-run]
 syncthis plugins list
+syncthis plugins enable <name…> --all | --agents <a,b,c> [--scope user|project|local] [--yes] [--dry-run]
+syncthis plugins disable <name…> --all | --agents <a,b,c> [--scope user|project|local] [--yes] [--dry-run]
 syncthis plugins rm <name…> --all | --agents <a,b,c> [--yes] [--dry-run] [--keep-data]
 syncthis doctor
 syncthis update [--dry-run]
@@ -40,6 +45,7 @@ syncthis help
 
 - `sync` discovers installed plugins from every readable native source and reconciles them across every supported target. It is additive and never uninstalls.
 - `plugins list` is read-only and shows native state for readable hosts plus Cursor's write-only limitation.
+- `plugins enable|disable` turn installed plugins on/off through each target's own CLI, guarded by preview and confirmation, with fresh native read-back verification. Claude Code alone accepts an explicit `--scope user|project|local`; omit it to keep each record's own scope.
 - `plugins rm` is the guarded removal path. It requires an explicit scope, shows the exact change set, and requires terminal confirmation or `--yes`.
 - `doctor` is a read-only source and target-outcome diagnostic. It exits non-zero when a source or synchronization preview is blocked.
 - `update` updates the `syncthis` executable; `version` prints the installed version.
@@ -87,7 +93,17 @@ The detailed report never upgrades unresolved work into a success. Conflicts, om
 
 The matrix describes the normal capability path, not a guarantee that every plugin artifact is portable. A particular target can honestly report `partial`, `blocked`, or `unsupported` instead.
 
-Grok Build accepts Agent Plugins through its native `grok plugin` lifecycle, including trusted installation, activation, listing, and removal. Prime Agent, Pi, and Cline receive private capability-preserving adaptations; Cline's separate TypeScript plugin ABI is not treated as Agent Plugins-native, so Syncthis does not generate or claim a native Cline wrapper.
+Syncthis drives Grok Build through its proven `grok plugin` CLI: trusted installation, activation, listing, and removal of exact translated artifacts, each verified by a fresh read-back. That CLI is a Claude Code-lineage command surface, and xAI's official documentation does not claim agent-plugins.org or root `plugin.json` conformance — so Syncthis's verified-native entry for Grok rests on the proven CLI contract alone (readable JSON state, read-back, exact translation), never on an upstream certification claim. Prime Agent, Pi, and Cline receive private capability-preserving adaptations; Cline's separate TypeScript plugin ABI is not treated as Agent Plugins-native, so Syncthis does not generate or claim a native Cline wrapper.
+
+### Compatibility honesty
+
+- **Cursor** accepts the root Agent Plugins manifest natively today, but Syncthis has no integrated, verified native read or read-back for it. Cursor therefore remains a conservative write/adaptation target in Syncthis and is never reported as readable or natively verified — the limitation is Syncthis's integration boundary, not a Cursor capability claim.
+- **Claude Code** uses its `.claude-plugin` overlay plus its own scoped plugin CLI; that is how Syncthis reads and drives it.
+- **Grok Build** is Claude-lineage and compatible in practice, but xAI's official documentation does not claim agent-plugins.org conformance; Syncthis relies only on the proven `grok plugin` CLI contract.
+- **OpenAI** authoring exposes `.codex-plugin` overlays while Agent Plugins lists ChatGPT/Codex as compatible; Syncthis reads what Codex actually reports through its own CLI.
+- **OpenCode** plugins are hook modules, so Syncthis adapts their portable content rather than claiming OpenCode hosts Agent Plugins.
+
+Agent Plugins v1.0.0 itself is an open portable directory package spec: a required root `plugin.json`, optional bundled capability folders next to it, and per-client extensions. It is not an install/update/uninstall registry, secrets or OAuth protocol, arbitrary settings schema, or hooks/agents/rules/LSP contract — v1 has none of those, and neither Syncthis nor this documentation claims them.
 
 ## Safety
 
@@ -106,7 +122,7 @@ The executable remains `syncthis`, the npm package remains `@forsvn/syncthis`, r
 
 ## Notes
 
-- The package runs on Node 18+ and Bun 1+.
+- The package runs on Node 22+ and Bun 1+.
 - The default promise is everywhere: there is no public reach-disabling switch.
 
 ## License

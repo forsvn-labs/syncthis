@@ -24,6 +24,7 @@ describe("plugin-only public surfaces", () => {
     expect(commands).toEqual([
       "syncthis sync",
       "syncthis plugins list",
+      "syncthis plugins enable|disable",
       "syncthis plugins rm <name…> --all",
       "syncthis doctor",
       "syncthis update",
@@ -36,10 +37,19 @@ describe("plugin-only public surfaces", () => {
   });
 
   test("interactive menu exposes only plugin actions and quit", () => {
-    expect(MAIN_MENU.map((item) => item.value)).toEqual(["overview", "sync", "doctor", "remove", "update", "quit"]);
+    expect(MAIN_MENU.map((item) => item.value)).toEqual([
+      "overview",
+      "sync",
+      "configure",
+      "doctor",
+      "remove",
+      "update",
+      "quit",
+    ]);
     expect(MAIN_MENU.map((item) => item.label)).toEqual([
-      "Plugin map",
+      "Installed plugins",
       "Sync plugins",
+      "Configure plugins",
       "Doctor",
       "Remove plugins",
       "Update Syncthis",

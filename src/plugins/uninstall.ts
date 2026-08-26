@@ -16,6 +16,7 @@ import { pluginAdapters } from "./index.ts";
 import { parsePluginId } from "./shell.ts";
 import type { PluginAdapterRead, PluginUninstallResult } from "./types.ts";
 import { readPluginInventory } from "./inventory.ts";
+import { resolveSyncthisDataHome } from "./data-home.ts";
 import {
   artifactMatchesRequest,
   installedArtifactRecords,
@@ -139,12 +140,17 @@ async function resolveOwnedMcp(plans: ArtifactPlan[]): Promise<OwnedMcp> {
   for (const plan of plans) {
     const root = plan.ownership.pluginRoot;
     if (!root || !plan.ownership.mcp) continue;
+    // Ownership resolution is read-only: the exact PLUGIN_DATA path is
+    // computed and validated (never created) so bundled stdio values compare
+    // equal to what an apply wrote, while removal planning writes nothing.
     const resolved = await resolvePluginMcpServers([{
       name: plan.artifact.canonicalName,
       marketplace: plan.artifact.marketplaces[0],
       path: root,
       enabled: true,
-    }]);
+    }], {
+      dataHome: { intent: "preview", dataRoot: resolveSyncthisDataHome() },
+    });
     for (const item of resolved.servers) {
       const prior = servers.get(item.name);
       if (prior && !mcpEqual(prior, item.server)) {

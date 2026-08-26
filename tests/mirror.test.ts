@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readdir, writeFile, readFile, realpath, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMirror, mirrorHasChanges } from "../src/plugins/mirror.ts";
@@ -17,6 +17,8 @@ let workDir: string;
 let originalHome: string | undefined;
 let originalPath: string | undefined;
 let originalXdg: string | undefined;
+let originalXdgData: string | undefined;
+let originalDataHome: string | undefined;
 let originalCopilotHome: string | undefined;
 
 beforeEach(async () => {
@@ -24,14 +26,28 @@ beforeEach(async () => {
   originalHome = process.env.HOME;
   originalPath = process.env.PATH;
   originalXdg = process.env.XDG_CONFIG_HOME;
+  originalXdgData = process.env.XDG_DATA_HOME;
+  originalDataHome = process.env.SYNCTHIS_DATA_HOME;
   originalCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = workDir;
   process.env.COPILOT_HOME = join(workDir, "copilot");
   // Goose honors XDG_CONFIG_HOME unconditionally; clear it so the mirror's MCP-cohort
   // write to goose lands under the temp HOME, not the real ~/.config.
   delete process.env.XDG_CONFIG_HOME;
+  // Pin the Syncthis data root under the temp HOME so PLUGIN_DATA lifecycle
+  // assertions never touch real user state.
+  delete process.env.XDG_DATA_HOME;
+  delete process.env.SYNCTHIS_DATA_HOME;
   const binDir = join(workDir, "bin");
   await mkdir(binDir, { recursive: true });
+  // Hermetic mirror tests: the apply path shells out via `npx` (the Cursor push
+  // and skills fallback). A real invocation resolves over the network, which is
+  // slow and flaky; the shim logs and succeeds instantly so tests stay offline.
+  await writeFile(
+    join(binDir, "npx"),
+    `#!/bin/sh\necho "npx $@" >> ${join(workDir, "invocations.log")}\nexit 0\n`,
+  );
+  await chmod(join(binDir, "npx"), 0o755);
   await writeFile(
     join(binDir, "grok"),
     "#!/bin/sh\nif [ \"$1 $2 $3\" = \"plugin list --json\" ]; then echo '[]'; exit 0; fi\nexit 1\n",
@@ -45,6 +61,10 @@ afterEach(async () => {
   process.env.PATH = originalPath;
   if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalXdg;
+  if (originalXdgData === undefined) delete process.env.XDG_DATA_HOME;
+  else process.env.XDG_DATA_HOME = originalXdgData;
+  if (originalDataHome === undefined) delete process.env.SYNCTHIS_DATA_HOME;
+  else process.env.SYNCTHIS_DATA_HOME = originalDataHome;
   if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
   else process.env.COPILOT_HOME = originalCopilotHome;
   await rm(workDir, { recursive: true, force: true });
@@ -294,6 +314,68 @@ describe("runMirror — plugin MCP decomposition", () => {
     const report = await runMirror({ from: "codex", apply: false });
     expect(report.mcpCohort.supported).toBe(false);
     expect(report.mcpCohort.reason).toMatch(/Claude/);
+  });
+
+  test("canonical stdio lifecycle: preview computes PLUGIN_DATA without creating it; apply lifts and creates it 0700", async () => {
+    // A canonical Agent Plugins v1 package whose only server is stdio and
+    // references ${PLUGIN_DATA}: before the production data-root wiring this
+    // work was silently dropped as partial in every flow.
+    const cacheDir = join(workDir, "plugin-cache", "canon");
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      join(cacheDir, "plugin.json"),
+      JSON.stringify({
+        $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        name: "canon",
+      }),
+    );
+    await writeFile(
+      join(cacheDir, "mcp.json"),
+      JSON.stringify({
+        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        mcpServers: { svc: { type: "stdio", command: "run", args: ["${PLUGIN_DATA}/db"] } },
+      }),
+    );
+    await installFakeCli("claude", JSON.stringify([{ id: "canon@mkt", enabled: true, installPath: cacheDir }]));
+    await installFakeCli("codex", "");
+
+    const preview = await runMirror({ from: "claude-code", apply: false, provision: false });
+    const previewed = preview.mcpCohort.servers.find((s) => s.name === "svc")!;
+    expect(previewed).toBeDefined();
+    const dataRoot = join(workDir, ".local", "share");
+    const pluginDataRoot = join(dataRoot, "syncthis", "plugin-data");
+    const previewArgs = (previewed.server as { args: string[] }).args;
+    expect(previewArgs[0]).toContain(pluginDataRoot);
+    // The preview computed the exact path but created nothing.
+    let exists = true;
+    try {
+      await lstat(dataRoot);
+    } catch {
+      exists = false;
+    }
+    expect(exists).toBe(false);
+
+    const applied = await runMirror({ from: "claude-code", apply: true, provision: false });
+    const gemini = applied.mcpCohort.results!.find((r) => r.agent === "gemini-cli")!;
+    expect(gemini.added).toEqual(["svc"]);
+
+    // The per-plugin directory now exists securely at exactly 0700.
+    const hashDirs = await readdir(pluginDataRoot);
+    expect(hashDirs.length).toBe(1);
+    const dirInfo = await lstat(join(pluginDataRoot, hashDirs[0]!));
+    expect(dirInfo.isDirectory()).toBe(true);
+    expect(dirInfo.mode & 0o777).toBe(0o700);
+
+    // The lifted config on the target references the SAME created path,
+    // spelled under the filesystem-resolved data root.
+    const realPluginDataRoot = await realpath(pluginDataRoot);
+    const written = JSON.parse(
+      await readFile(join(workDir, ".gemini", "settings.json"), "utf8"),
+    ) as { mcpServers: Record<string, { args?: string[]; env?: Record<string, string>; cwd?: string }> };
+    const liftedServer = written.mcpServers.svc!;
+    expect(liftedServer.args![0]).toBe(join(realPluginDataRoot, hashDirs[0]!, "db"));
+    expect(liftedServer.env!.PLUGIN_DATA).toBe(join(realPluginDataRoot, hashDirs[0]!));
+    expect(liftedServer.env!.PLUGIN_ROOT).toBe(await realpath(cacheDir));
   });
 
   test("apply is additive and conflict-safe per agent", async () => {

@@ -11,13 +11,15 @@ function snapshot(overrides: Partial<ControlCenterSnapshot> = {}): ControlCenter
     offset: 0,
     loading: false,
     hasError: false,
-    menuLength: 6,
+    menuLength: 7,
     listLength: 3,
     selectedCount: 0,
     syncPreviewReady: true,
     syncApplyAvailable: true,
     removePreviewReady: true,
     removeApplyAvailable: true,
+    configurePreviewReady: true,
+    configureApplyAvailable: true,
     updatePlanReady: true,
     updateCompleted: false,
     ...overrides,
@@ -159,5 +161,149 @@ describe("control-center screen/input policy", () => {
     ).toEqual({ type: "move-cursor", delta: -1, wrap: false });
     expect(handleControlCenterKey(snapshot(), { input: "" })).toBeUndefined();
     expect(handleControlCenterKey(snapshot(), { input: "q" })).toEqual({ type: "exit" });
+  });
+});
+
+describe("installed-plugins list and detail policy", () => {
+  test("enter opens the detail view only for a real row, and the detail scrolls", () => {
+    expect(
+      handleControlCenterKey(snapshot({ screen: "overview" }), { input: "", return: true }),
+    ).toEqual({ type: "navigate", screen: "plugin-detail" });
+    expect(
+      handleControlCenterKey(snapshot({ screen: "overview", listLength: 0 }), {
+        input: "",
+        return: true,
+      }),
+    ).toBeUndefined();
+    // The installed list is selectable, not scrollable — no scroll binding.
+    expect(
+      handleControlCenterKey(snapshot({ screen: "overview" }), { input: "", downArrow: true }),
+    ).toEqual({ type: "move-cursor", delta: 1, wrap: false });
+    const detail = snapshot({ screen: "plugin-detail" });
+    expect(handleControlCenterKey(detail, { input: "", downArrow: true })).toEqual({
+      type: "scroll",
+      delta: 1,
+    });
+    expect(handleControlCenterKey(detail, { input: "", return: true })).toBeUndefined();
+  });
+});
+
+describe("configure (enable/disable) flow policy", () => {
+  test("runs verb → plugins → targets in strict order with explicit selections", () => {
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-verb", cursor: 1, listLength: 2 }), {
+        input: "",
+        return: true,
+      }),
+    ).toEqual({ type: "choose-option", index: 1 });
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-verb", cursor: 2, listLength: 2 }), {
+        input: "",
+        return: true,
+      }),
+    ).toBeUndefined();
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-plugins", selectedCount: 0 }), {
+        input: "",
+        return: true,
+      }),
+    ).toBeUndefined();
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-plugins", selectedCount: 2 }), {
+        input: "",
+        return: true,
+      }),
+    ).toEqual({ type: "navigate", screen: "configure-scope" });
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-scope", selectedCount: 0 }), {
+        input: "",
+        return: true,
+      }),
+    ).toEqual({ type: "run", task: "preview-activation-all" });
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-scope", cursor: 1 }), {
+        input: "",
+        return: true,
+      }),
+    ).toEqual({ type: "navigate", screen: "configure-agents" });
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-agents", selectedCount: 0 }), {
+        input: "",
+        return: true,
+      }),
+    ).toBeUndefined();
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-agents", selectedCount: 3 }), {
+        input: "",
+        return: true,
+      }),
+    ).toEqual({ type: "run", task: "preview-activation-agents" });
+  });
+
+  test("the Claude-only scope choice is a clamped single select over four options", () => {
+    const state = snapshot({ screen: "configure-claude-scope", listLength: 4 });
+    expect(handleControlCenterKey(state, { input: "", downArrow: true })).toEqual({
+      type: "move-cursor",
+      delta: 1,
+      wrap: false,
+    });
+    expect(
+      handleControlCenterKey(state, { input: "", return: true }),
+    ).toEqual({ type: "choose-option", index: 0 });
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-claude-scope", cursor: 4, listLength: 4 }), {
+        input: "",
+        return: true,
+      }),
+    ).toBeUndefined();
+  });
+
+  test("apply is offered only from a ready preview seam and never after the result", () => {
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-preview" }), { input: "a" }),
+    ).toEqual({ type: "navigate", screen: "configure-confirm" });
+    expect(
+      handleControlCenterKey(
+        snapshot({ screen: "configure-preview", configureApplyAvailable: false }),
+        { input: "a" },
+      ),
+    ).toBeUndefined();
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-confirm" }), { input: "y" }),
+    ).toEqual({ type: "run", task: "apply-activation" });
+    expect(
+      handleControlCenterKey(snapshot({ screen: "configure-confirm" }), { input: "n" }),
+    ).toEqual({ type: "navigate", screen: "configure-preview" });
+    const result = snapshot({ screen: "configure-result" });
+    expect(handleControlCenterKey(result, { input: "a" })).toBeUndefined();
+    expect(handleControlCenterKey(result, { input: "y" })).toBeUndefined();
+    expect(handleControlCenterKey(result, { input: "", downArrow: true })).toEqual({
+      type: "scroll",
+      delta: 1,
+    });
+  });
+
+  test("no duplicate activation task exists in the union", () => {
+    const tasks = new Set<string>();
+    const screens = [
+      "configure-scope",
+      "configure-agents",
+      "configure-confirm",
+    ] as const;
+    for (const screen of screens) {
+      let command = handleControlCenterKey(snapshot({ screen, selectedCount: 2 }), {
+        input: "",
+        return: true,
+      });
+      if (!command && screen === "configure-confirm") {
+        command = handleControlCenterKey(snapshot({ screen }), { input: "y" });
+      }
+      if (command?.type === "run") tasks.add(command.task);
+    }
+    expect([...tasks].sort()).toEqual([
+      "apply-activation",
+      "preview-activation-agents",
+      "preview-activation-all",
+    ]);
   });
 });

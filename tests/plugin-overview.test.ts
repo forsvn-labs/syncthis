@@ -5,7 +5,12 @@ import { join } from "node:path";
 import {
   buildPluginOverview,
   overviewCounts,
+  pluginDetailLines,
+  pluginOverviewRows,
+  pluginRowSummary,
   renderPluginOverview,
+  type PluginOverview,
+  type PluginOverviewRow,
 } from "../src/plugins/overview.ts";
 import { skillAgentLabelToId, listInstalledSkills } from "../src/skills.ts";
 
@@ -153,5 +158,76 @@ describe("buildPluginOverview", () => {
     const o = await buildPluginOverview();
     expect(Object.keys(o)).toEqual(["native"]);
     expect(o.native.find((r) => r.agent === "claude-code")?.plugins.map((p) => p.name)).toEqual(["foo"]);
+  });
+});
+
+describe("installed-plugin detail helpers (pure)", () => {
+  const overview: PluginOverview = {
+    native: [
+      {
+        agent: "claude-code",
+        configPath: "/h/.claude/plugins/installed_plugins.json",
+        exists: true,
+        plugins: [],
+      },
+      { agent: "codex", configPath: "/h/.codex", exists: true, plugins: [] },
+      { agent: "github-copilot", configPath: "/h/copilot", exists: true, plugins: [] },
+      { agent: "grok-build", configPath: "/h/grok", exists: false, plugins: [], error: "grok unavailable" },
+    ],
+  };
+
+  function row(overrides: Partial<PluginOverviewRow["agents"]> = {}): PluginOverviewRow {
+    return {
+      plugin: "foo@mkt",
+      agents: {
+        "claude-code": {
+          state: "native",
+          version: "1.2.3",
+          marketplace: "mkt",
+          scope: "user",
+          path: "/h/.claude/plugins/foo",
+        },
+        codex: { state: "disabled", version: "1.0.0" },
+        ...overrides,
+      },
+    };
+  }
+
+  test("detail lines report per-agent state, version, scope, and provenance", () => {
+    const lines = pluginDetailLines(overview, row()).join("\n");
+
+    expect(lines).toContain("Installed state for foo@mkt");
+    expect(lines).toContain("claude-code · native · version 1.2.3 · scope user · path /h/.claude/plugins/foo");
+    expect(lines).toContain("codex · native · disabled");
+    expect(lines).toContain("github-copilot · not installed");
+    // Unreadable sources get "blocked — reason", never an invented state.
+    expect(lines).toContain("grok-build · blocked — grok unavailable");
+    expect(lines).toContain("Cursor is write-only");
+  });
+
+  test("falls back to source repo provenance when no local path is known", () => {
+    const lines = pluginDetailLines(overview, row({
+      "claude-code": { state: "native", version: "1.2.3", sourceRepo: "owner/repo" },
+    })).join("\n");
+
+    expect(lines).toContain("claude-code · native · version 1.2.3 · source owner/repo");
+    expect(lines).not.toContain("path ");
+  });
+
+  test("an all-absent plugin claims nothing as installed", () => {
+    const emptyRow: PluginOverviewRow = { plugin: "ghost", agents: {} };
+    const lines = pluginDetailLines(overview, emptyRow).join("\n");
+
+    expect(lines).toContain("No readable agent reports this plugin as installed.");
+    expect(lines).not.toContain("· native");
+  });
+
+  test("row summaries cover the four readable sources without unreadable claims", () => {
+    expect(pluginRowSummary(row())).toBe(
+      "Claude native · Codex off · Copilot — · Grok —",
+    );
+    expect(pluginRowSummary(row({ codex: undefined }))).toBe(
+      "Claude native · Codex — · Copilot — · Grok —",
+    );
   });
 });

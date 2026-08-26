@@ -2,6 +2,17 @@
 
 All notable changes to `@forsvn/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [0.21.0] — 2026-08-26
+
+### Added
+- **The no-argument experience is now the plugin hub.** The Ink control center leads with installed plugins: a selectable installed list plus a per-plugin detail view showing name and marketplace, per-readable-agent native state, enabled/disabled, version, config scope, and provenance/path when the target itself reports it. Unreadable clients stay `blocked`; nothing claims state it cannot read.
+- **Interactive configure flow for enable/disable.** Choose enable or disable, select plugins, pick all or exact agents, and confirm from an authoritative preview that shows each target's exact planned native command. When the target set is Claude Code alone you may choose an activation scope (auto/exact installed record recommended, user, project, local); mixed or all target sets omit the Claude `--scope` flag and surface record ambiguity honestly. Both verbs stay preview/confirm guarded, apply only through each target's own CLI, and verify with a fresh native read.
+
+### Changed
+- **Node 22+ is required.** Installed Ink 7 needs Node >=22; `engines` now enforces it. Bun remains the development runtime.
+- **Agent Plugins is described precisely.** Documentation calls Agent Plugins v1.0.0 what it is: an open portable directory package spec (required root `plugin.json`, optional immediate `skills/*/SKILL.md` and root `mcp.json`, client extensions) — not a lifecycle, registry, or secrets protocol.
+- **Compatibility claims stay honest.** Cursor natively accepts the root Agent Plugins manifest today, but Syncthis has no verified readable native lifecycle contract for it yet, so it remains a conservative write/adaptation target. Grok Build's official docs do not claim agent-plugins.org conformance even though its lineage is compatible. OpenAI authoring exposes `.codex-plugin` overlays while Agent Plugins lists ChatGPT/Codex as compatible. OpenCode plugins are hook modules, so Syncthis adapts skills/MCP rather than claiming native hosting.
+
 ## [0.20.0] — 2026-08-25
 
 ### Changed

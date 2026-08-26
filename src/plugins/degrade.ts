@@ -6,6 +6,7 @@ import { findAdapter } from "../adapters/index.ts";
 import { diffServers } from "../mcp-state.ts";
 import type { Adapter, AgentId, McpServer } from "../types.ts";
 import type { ArtifactKey } from "./artifact-key.ts";
+import { resolveSyncthisDataHome } from "./data-home.ts";
 import type { PluginInventoryArtifact } from "./inventory.ts";
 import {
   artifactKeyOf,
@@ -367,7 +368,17 @@ export async function runPluginDegradation(
   const dependencies = options.dependencies ?? {};
   const installSkills = dependencies.addSkillSources ?? addSkillSources;
   const findMcp = dependencies.findMcpAdapter ?? findAdapter;
-  const resolveMcp = dependencies.resolveMcpServers ?? resolvePluginMcpServers;
+  // Production lifecycle: a dry-run degradation preview computes+validates the
+  // exact per-plugin PLUGIN_DATA path (no writes), and an apply creates it
+  // securely before the lifted stdio configs are emitted. Injected resolvers
+  // (tests/control planes) keep their full authority.
+  const dataRoot = resolveSyncthisDataHome();
+  const resolveMcp =
+    dependencies.resolveMcpServers ??
+    ((plugins: Parameters<typeof resolvePluginMcpServers>[0]) =>
+      dryRun
+        ? resolvePluginMcpServers(plugins, { dataHome: { intent: "preview", dataRoot } })
+        : resolvePluginMcpServers(plugins, { dataHome: { intent: "create", dataRoot } }));
   const artifacts = new Map<ArtifactKey, PluginInventoryArtifact>();
   for (const artifact of options.reconcile.inventory.artifacts) {
     artifacts.set(artifactKeyOf(artifact), artifact);

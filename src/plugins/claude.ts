@@ -7,6 +7,8 @@ import { assertSafeIdentifier, openPluginsArgs, parsePluginId, run } from "./she
 import type {
   PluginAdapter,
   PluginAdapterRead,
+  PluginActivationOpts,
+  PluginActivationResult,
   PluginInstallOpts,
   PluginInstallResult,
   PluginRecord,
@@ -347,5 +349,97 @@ export const claudePluginAdapter: PluginAdapter = {
       };
     }
     return { agent: "claude-code", target, status: "uninstalled" };
+  },
+
+  // Claude reports an explicit boolean per install; a missing flag is unknown
+  // rather than enabled, so activation always demands an observed value.
+  activationState(record: PluginRecord): boolean | undefined {
+    return typeof record.enabled === "boolean" ? record.enabled : undefined;
+  },
+
+  // Guarded activation — reached only by `syncthis plugins enable|disable`.
+  // Matches and verifies the exact installed record (name + marketplace when
+  // qualified), runs `claude plugin <enable|disable> [--scope] -- <name[@mkt]>`,
+  // then verifies with a fresh native read; exit zero without an observed state
+  // change is a failure.
+  async setPluginActivation(name: string, opts: PluginActivationOpts): Promise<PluginActivationResult> {
+    try {
+      assertSafeIdentifier(name, "plugin name");
+      if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
+    } catch (err) {
+      return { agent: "claude-code", target: name, status: "failed", message: (err as Error).message };
+    }
+    const target = opts.marketplace ? `${name}@${opts.marketplace}` : name;
+    const desired = opts.op === "enable";
+    // With an explicit scope, ONLY the exact name+marketplace+scope record
+    // counts — for the presence check and again for the fresh read-back.
+    const exact = (p: PluginRecord) =>
+      pluginMatches(p, name, opts.marketplace) && (!opts.scope || p.scope === opts.scope);
+    const read = await this.read();
+    if (read.error) {
+      return { agent: "claude-code", target, status: "failed", message: `cannot read plugins: ${read.error}` };
+    }
+    // Exactly one matching record, before AND after the command — a service-side
+    // uniqueness check alone would be raceable.
+    const matches = read.plugins.filter(exact);
+    if (matches.length === 0) return { agent: "claude-code", target, status: "absent" };
+    if (matches.length > 1) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: `several installed records match ${target}${opts.scope ? ` (${opts.scope})` : ""}; qualify further before activating`,
+      };
+    }
+    const found = matches[0]!;
+    if (this.activationState!(found) === desired) {
+      return {
+        agent: "claude-code",
+        target,
+        status: desired ? "enabled" : "disabled",
+        message: `already ${desired ? "enabled" : "disabled"}`,
+      };
+    }
+    const args = ["plugin", opts.op];
+    if (opts.scope) args.push("--scope", opts.scope);
+    args.push("--", target);
+    // Full native command as argv[0]-complete form, for exact previews.
+    if (opts.dryRun) {
+      return {
+        agent: "claude-code",
+        target,
+        status: desired ? "enabled" : "disabled",
+        planned: true,
+        plannedCommand: ["claude", ...args],
+        message: "dry-run; command was not run and nothing was verified",
+      };
+    }
+    // Activation mutates config like install/uninstall do; give it the
+    // mutation budget, not the read one.
+    const res = await run("claude", args, { timeoutMs: INSTALL_TIMEOUT_MS });
+    if (res.notFound) return { agent: "claude-code", target, status: "failed", message: "claude CLI not found" };
+    if (!res.ok) return { agent: "claude-code", target, status: "failed", message: res.stderr.trim() || `exit ${res.exitCode}` };
+
+    // Verify the SAME exact record (name + marketplace + scope), still unique —
+    // not any same-named sibling that the command may have missed.
+    const verified = await this.read();
+    if (verified.error) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: `${opts.op} exited successfully, but fresh native state could not be read: ${verified.error}`,
+      };
+    }
+    const afters = verified.plugins.filter(exact);
+    if (afters.length !== 1 || this.activationState!(afters[0]!) !== desired) {
+      return {
+        agent: "claude-code",
+        target,
+        status: "failed",
+        message: `Claude reported success, but a fresh native read did not show exactly one ${target}${opts.scope ? ` (${opts.scope})` : ""} record ${desired ? "enabled" : "disabled"}`,
+      };
+    }
+    return { agent: "claude-code", target, status: desired ? "enabled" : "disabled" };
   },
 };

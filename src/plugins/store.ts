@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile, chmod, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { resolveSyncthisDataHome } from "./data-home.ts";
 import {
   readPluginPackage,
   SYNCTHIS_MARKER,
@@ -10,22 +11,12 @@ import {
 const STORE_VERSION = 1;
 
 /**
- * Syncthis-owned content store used at the composition boundary. XDG data is
- * preferred when configured; the default stays under the user's home and is
- * separate from any source client's cache.
+ * Syncthis-owned content store used at the composition boundary. Derived from
+ * the one canonical data root (SYNCTHIS_DATA_HOME → XDG_DATA_HOME → the user's
+ * data home) so previews and applies agree on the exact location.
  */
 export function resolvePluginStoreRoot(): string {
-  const home = resolve(process.env.HOME ?? homedir());
-  const configured = process.env.SYNCTHIS_DATA_HOME?.trim() || process.env.XDG_DATA_HOME?.trim();
-  const expanded = configured === "~"
-    ? home
-    : configured?.startsWith("~/")
-      ? join(home, configured.slice(2))
-      : configured;
-  const dataRoot = expanded
-    ? (isAbsolute(expanded) ? resolve(expanded) : resolve(home, expanded))
-    : join(home, ".local", "share");
-  return join(dataRoot, "syncthis", "plugins");
+  return join(resolveSyncthisDataHome(), "syncthis", "plugins");
 }
 
 type StoreMarker = {

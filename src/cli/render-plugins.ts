@@ -409,7 +409,7 @@ export function printUninstallPreview(
         break;
       }
       case "native-blocked":
-        rowOf("invalid", row.agent, "", `can't read plugins: ${neutralPluginText(row.reason)}`);
+        rowOf("invalid", row.agent, "", neutralPluginText(row.reason, "cannot read plugins"));
         break;
       case "skills-remove":
         console.log(

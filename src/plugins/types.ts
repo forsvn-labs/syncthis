@@ -58,8 +58,10 @@ export type PluginUninstallOpts = {
   // marketplace on the target. Optional — the adapter resolves it from the
   // installed snapshot when there's only one.
   marketplace?: string;
-  // Claude only: pass `--keep-data` so the plugin's persistent data dir survives
-  // the uninstall. Off by default (a plain uninstall removes data too).
+  // Opt-in: keep the plugin's persistent data dir instead of removing it.
+  // Only native uninstall paths that support the flag honor it (currently
+  // Claude Code and Grok Build); off by default (a plain uninstall removes
+  // data too).
   keepData?: boolean;
 };
 
@@ -99,6 +101,43 @@ export type PluginInstallResult = {
   coveredBy?: string;
 };
 
+// Activation (enable/disable) of an already-installed plugin. Only targets whose
+// official CLI proves a plugin enable/disable command implement it.
+export type PluginActivationOp = "enable" | "disable";
+export type PluginActivationScope = "user" | "project" | "local";
+
+export type PluginActivationOpts = {
+  op: PluginActivationOp;
+  dryRun: boolean;
+  // Explicit config scope for the command. Claude Code only — targets without a
+  // scope option must reject it rather than silently drop it.
+  scope?: PluginActivationScope;
+  // Disambiguate when the same plugin name is installed under more than one
+  // marketplace on the target. Targets that cannot select by marketplace must
+  // fail rather than guess.
+  marketplace?: string;
+};
+
+export type PluginActivationStatus =
+  | "enabled"
+  | "disabled"
+  | "absent"
+  | "unsupported"
+  | "failed";
+
+export type PluginActivationResult = {
+  agent: AgentId;
+  target: string;
+  status: PluginActivationStatus;
+  message?: string;
+  // Set on dry-run rows: the command was planned, never run, and nothing was
+  // verified. A planned row must never be presented as an applied outcome.
+  planned?: true;
+  // Exact argv the native CLI would run (dry-run) — surfaced in previews so
+  // confirmation shows the precise per-target command.
+  plannedCommand?: string[];
+};
+
 export interface PluginAdapter {
   id: AgentId;
   // Some native runtimes cannot resolve a foreign plugin name from their own
@@ -127,4 +166,17 @@ export interface PluginAdapter {
   // sync or mirror — only by the explicit `syncthis plugin rm` command, behind the
   // same rails as MCP `rm` (explicit scope, diff, TTY-confirm or --yes, --dry-run).
   uninstallPlugin(name: string, opts: PluginUninstallOpts): Promise<PluginUninstallResult>;
+  // Optional activation capability: turn an installed plugin on/off via the
+  // target's own CLI. Present only on targets with a proven enable/disable
+  // command. Must verify with a fresh native read: exit zero without an
+  // observed enabled-state change is a failure, never a success.
+  setPluginActivation?(
+    name: string,
+    opts: PluginActivationOpts,
+  ): Promise<PluginActivationResult>;
+  // Optional adapter-local meaning of the target's activation state for one
+  // record. Lets the shared activation preview read each target's own semantics
+  // (e.g. "no explicit flag" = enabled on Grok, unknown on Claude) without a
+  // per-target switch in the service or UI.
+  activationState?(record: PluginRecord): boolean | undefined;
 }

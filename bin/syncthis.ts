@@ -13,6 +13,10 @@ import {
 } from "../src/cli/render-plugins.ts";
 import { dim, green, red, row, yellow } from "../src/cli/output.ts";
 import {
+  activationPreviewRows,
+  activationResultRows,
+} from "../src/cli/activation-presentation.ts";
+import {
   dispatchRegisteredCommand,
   type CommandRegistry,
 } from "../src/cli/registry.ts";
@@ -28,6 +32,8 @@ const OPTIONS = {
   // `plugin rm` scope + behavior.
   agents: { type: "string" },
   "keep-data": { type: "boolean" },
+  // `plugins enable|disable`: Claude Code config scope (user|project|local).
+  scope: { type: "string" },
   // Readable native plugin source for the retained scoped plugin add command.
   from: { type: "string" },
 } as const;
@@ -58,8 +64,160 @@ async function cmdPlugins(argv: string[]) {
   if (sub === "mirror") return cmdMirror(argv.slice(1));
   if (sub === "add") return cmdAddPlugin(argv.slice(1));
   if (sub === "rm" || sub === "remove" || sub === "uninstall") return cmdPluginRemove(argv.slice(1));
+  if (sub === "enable" || sub === "disable") return cmdPluginsActivate(argv.slice(1), sub);
   console.error(red(`plugins: unknown verb \`${sub}\`. try \`syncthis plugins help\`.`));
   process.exit(2);
+}
+
+// Guarded activation: `syncthis plugins enable|disable <name…>`. Same rails as
+// removal — explicit scope, exact per-target preview, TTY-confirm or --yes,
+// --dry-run — plus the --scope rail that only survives a pure Claude Code
+// target set. Presentation rows are shared; only color lives here.
+async function cmdPluginsActivate(argv: string[], op: "enable" | "disable") {
+  const {
+    ActivationUsageError,
+    activationHasChanges,
+    resolveActivationRequest,
+    runPluginActivation,
+  } = await import("../src/plugins/activation.ts");
+  const { pluginReconcileTargets } = await import("../src/plugins/targets.ts");
+  const verb = `plugins ${op}`;
+  const { values, positionals } = parse(argv);
+  if (positionals.length === 0) {
+    console.error(red(`${verb}: name at least one plugin`));
+    process.exit(2);
+  }
+  let request;
+  try {
+    request = resolveActivationRequest({
+      all: !!values.all,
+      agents: values.agents,
+      scope: values.scope,
+      known: pluginReconcileTargets().map((target) => target.agent),
+    });
+  } catch (err) {
+    if (err instanceof ActivationUsageError) {
+      console.error(red(`${verb}: ${err.message}`));
+      process.exit(2);
+    }
+    throw err;
+  }
+
+  const dryRun = !!values["dry-run"];
+  const preview = await runPluginActivation({
+    op,
+    plugins: positionals,
+    agents: request.agents,
+    ...(request.scope ? { scope: request.scope } : {}),
+    apply: false,
+  });
+  printActivationPreview(preview);
+  if (!activationHasChanges(preview)) {
+    console.log(dim("nothing to do."));
+    return;
+  }
+  if (dryRun) {
+    // The preview above already carries each target's exact planned native
+    // command (from the safe dry-run preflight). Nothing was run, nothing was
+    // verified — say so and stop; there is no second planning pass.
+    console.log(dim("dry-run — no changes applied, nothing was verified."));
+    return;
+  }
+  await confirmDestructive(!!values.yes);
+  // The preview above is authoritative: apply replays its confirmed plan and
+  // re-checks every record against a fresh native read before mutating. Any
+  // drift since confirmation becomes a failed result with zero commands.
+  const applied = await runPluginActivation({
+    op,
+    plugins: positionals,
+    agents: request.agents,
+    ...(request.scope ? { scope: request.scope } : {}),
+    apply: true,
+    confirmedPreview: preview,
+  });
+  if (printActivationApplied(applied)) process.exit(1);
+}
+
+function printActivationPreview(report: import("../src/plugins/activation.ts").ActivationReport) {
+  const header =
+    report.scope
+      ? `${report.op === "enable" ? "Enable" : "Disable"} ${report.plugins.map((plugin) => green(plugin)).join(", ")} on Claude Code (${report.scope} scope):`
+      : `${report.op === "enable" ? "Enable" : "Disable"} ${report.plugins.map((plugin) => green(plugin)).join(", ")}:`;
+  console.log(header);
+  for (const r of activationPreviewRows(report)) {
+    switch (r.kind) {
+      case "scope":
+        break;
+      case "plan": {
+        const detail = r.command
+          ? dim(`would run: ${r.command}`)
+          : dim(`would be ${r.state}`);
+        console.log(`  ${green("+")} ${r.agent.padEnd(14)} ${r.plugin} ${detail}`);
+        break;
+      }
+      case "already":
+        console.log(`  ${dim("·")} ${r.agent.padEnd(14)} ${dim(`${r.plugin} already ${r.state}`)}`);
+        break;
+      case "absent":
+        console.log(`  ${dim("·")} ${r.agent.padEnd(14)} ${dim(`${r.plugin} not installed`)}`);
+        break;
+      case "ambiguous":
+        row(
+          "invalid",
+          r.agent,
+          "",
+          `several installed records match (${r.records.join(", ")}); qualify with <name>@<marketplace> and/or --scope`,
+        );
+        break;
+      case "blocked":
+        // The actual reason (unreadable client vs the target's own refusal) —
+        // never a hardcoded can't-read label that could misreport a refusal.
+        row("invalid", r.agent, "", neutralPluginText(r.reason, "cannot read plugins"));
+        break;
+      case "unsupported":
+        console.log(`  ${dim("·")} ${r.agent.padEnd(14)} ${dim(neutralPluginText(r.reason))}`);
+        break;
+    }
+  }
+}
+
+function printActivationApplied(
+  report: import("../src/plugins/activation.ts").ActivationReport,
+): number {
+  let changed = 0;
+  let absent = 0;
+  let failed = 0;
+  for (const r of activationResultRows(report)) {
+    switch (r.kind) {
+      case "planned":
+        console.log(`  ${green("+")} ${r.agent.padEnd(14)} ${r.target} ${dim(`would be ${r.status} (dry-run, unverified)`)}`);
+        break;
+      case "changed":
+        changed += 1;
+        row("synced", r.agent, r.target, r.status);
+        break;
+      case "unchanged":
+        row("unchanged", r.agent, r.target, `already ${r.status}`);
+        break;
+      case "absent":
+        absent += 1;
+        break;
+      case "failed":
+        failed += 1;
+        row("failed", r.agent, r.target, neutralPluginText(r.reason, `plugin ${report.op} failed`));
+        break;
+    }
+  }
+  for (const item of report.unsupported) {
+    console.log(`  ${dim("·")} ${item.agent.padEnd(14)} ${dim(neutralPluginText(item.reason))}`);
+  }
+  const parts = [
+    changed ? green(`${changed} changed`) : "",
+    absent ? dim(`${absent} absent`) : "",
+    failed ? red(`${failed} failed`) : "",
+  ].filter(Boolean);
+  if (parts.length) console.log(`\n${parts.join(dim(" · "))}`);
+  return failed;
 }
 
 async function cmdUpdate(argv: string[]) {
@@ -151,7 +309,7 @@ async function cmdPlugin(argv: string[]) {
         "syncthis plugin rm <plugin…> --all   — uninstall plugin(s) everywhere\n" +
         "syncthis plugin rm <plugin…> --agents <a,b,c>\n" +
         "                                     — uninstall only from the named agents\n" +
-        "  flags: --dry-run (preview), --yes (skip confirm), --keep-data (Claude: keep plugin data)",
+        "  flags: --dry-run (preview), --yes (skip confirm), --keep-data (keep plugin data where the native uninstall supports it: Claude Code, Grok Build)",
     );
     return;
   }

@@ -1,6 +1,6 @@
 {
   "name": "@forsvn/syncthis",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "Syncthis — install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
   "type": "module",
   "license": "MIT",
@@ -49,7 +49,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18",
+    "node": ">=22",
     "bun": ">=1.0.0"
   },
   "scripts": {

@@ -14,6 +14,8 @@ import {
 import type {
   PluginAdapter,
   PluginAdapterRead,
+  PluginActivationOpts,
+  PluginActivationResult,
   PluginInstallOpts,
   PluginInstallResult,
   PluginRecord,
@@ -539,5 +541,120 @@ export const grokPluginAdapter: PluginAdapter = {
       };
     }
     return { agent: "grok-build", target: match.record.name, status: "uninstalled" };
+  },
+
+  // Grok has no per-plugin flag by default: absent from `[plugins].disabled`
+  // means enabled, so the only provable state is explicit-disabled.
+  activationState(record: PluginRecord): boolean | undefined {
+    return record.enabled === false ? false : true;
+  },
+
+  // Guarded activation — reached only by `syncthis plugins enable|disable`.
+  // Runs the proven `grok plugin <enable|disable> <name>` command, then verifies
+  // with a fresh native read; exit zero without an observed state change is a
+  // failure. Grok's command has no scope option, so an explicit scope is
+  // rejected rather than silently dropped. The bare command also cannot express
+  // a marketplace or repository, so ANY overlap across several installed
+  // records is refused — even a qualified request must not risk mutating the
+  // wrong record.
+  async setPluginActivation(name: string, opts: PluginActivationOpts): Promise<PluginActivationResult> {
+    if (opts.scope) {
+      return {
+        agent: "grok-build",
+        target: name,
+        status: "failed",
+        message: `Grok's plugin ${opts.op} command has no --scope option; pass --scope only for Claude Code`,
+      };
+    }
+    try {
+      assertSafeIdentifier(name, "Grok plugin name");
+      if (opts.marketplace) assertSafeIdentifier(opts.marketplace, "marketplace name");
+    } catch (err) {
+      return { agent: "grok-build", target: name, status: "failed", message: err instanceof Error ? err.message : String(err) };
+    }
+    const target = opts.marketplace ? `${name}@${opts.marketplace}` : name;
+    const desired = opts.op === "enable";
+    let before: ResolvedGrokPlugin[];
+    try {
+      before = await readNativeState();
+    } catch (err) {
+      return { agent: "grok-build", target, status: "failed", message: err instanceof Error ? err.message : String(err) };
+    }
+    const overlapping = before.filter(({ record }) => pluginNamesOverlap(record.name, name));
+    if (overlapping.length === 0) return { agent: "grok-build", target, status: "absent" };
+    if (overlapping.length > 1 || new Set(overlapping.map(({ record }) => record.marketplace ?? "")).size > 1) {
+      return {
+        agent: "grok-build",
+        target,
+        status: "failed",
+        message: `cannot select exactly one installed Grok record for ${target}: the name overlaps ${overlapping.length} records (${[...new Set(overlapping.map(({ record }) => record.marketplace ? `${record.name}@${record.marketplace}` : record.name))].join(", ")}), and Grok's CLI cannot express marketplace selection`,
+      };
+    }
+    const match = overlapping[0]!;
+    if (this.activationState!(match.record) === desired) {
+      return {
+        agent: "grok-build",
+        target: match.record.name,
+        status: desired ? "enabled" : "disabled",
+        message: `already ${desired ? "enabled" : "disabled"}`,
+      };
+    }
+    const args = ["plugin", opts.op, match.record.name];
+    if (opts.dryRun) {
+      return {
+        agent: "grok-build",
+        target: match.record.name,
+        status: desired ? "enabled" : "disabled",
+        planned: true,
+        plannedCommand: ["grok", ...args],
+        message: "dry-run; command was not run and nothing was verified",
+      };
+    }
+    const activated = await run("grok", args, {
+      timeoutMs: MUTATION_TIMEOUT_MS,
+    });
+    if (!activated.ok) {
+      return {
+        agent: "grok-build",
+        target: match.record.name,
+        status: "failed",
+        message: commandFailure(`grok plugin ${opts.op}`, activated, MUTATION_TIMEOUT_MS),
+      };
+    }
+    let after: ResolvedGrokPlugin[];
+    try {
+      after = await readNativeState();
+    } catch (err) {
+      return {
+        agent: "grok-build",
+        target: match.record.name,
+        status: "failed",
+        message: `${opts.op} succeeded, but verification failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    // The fresh read-back must still resolve to exactly one record: a command
+    // that leaves (or creates) an ambiguous overlap cannot be claimed.
+    const afterOverlapping = after.filter(({ record }) => pluginNamesOverlap(record.name, match.record.name));
+    if (
+      afterOverlapping.length !== 1 ||
+      new Set(afterOverlapping.map(({ record }) => record.marketplace ?? "")).size > 1
+    ) {
+      return {
+        agent: "grok-build",
+        target: match.record.name,
+        status: "failed",
+        message: `Grok reported success, but a fresh native read does not resolve to exactly one installed record for ${match.record.name}`,
+      };
+    }
+    const observed = afterOverlapping[0]!;
+    if (this.activationState!(observed.record) !== desired) {
+      return {
+        agent: "grok-build",
+        target: match.record.name,
+        status: "failed",
+        message: `Grok reported success, but a fresh native read did not show the plugin ${desired ? "enabled" : "disabled"}`,
+      };
+    }
+    return { agent: "grok-build", target: match.record.name, status: desired ? "enabled" : "disabled" };
   },
 };

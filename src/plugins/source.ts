@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
+import {
+  AGENT_PLUGINS_SPEC_VERSION,
+  CANONICAL_MCP_PATH,
+  CANONICAL_MANIFEST_PATH,
+  agentPluginsSchemaVersion,
+  validatePluginManifestV1,
+  type V1ManifestValidation,
+} from "./agent-plugins-v1.ts";
 import { walkSecureTree } from "./secure-tree.ts";
 
 const NATIVE_MANIFEST_DIRS = new Set([
@@ -39,12 +47,60 @@ export type PluginSourceInspection = {
   sourceVersion?: string;
   contentFingerprint?: string;
   manifests: string[];
+  // Present only when a root plugin.json claims the Agent Plugins v1 schema.
+  v1Canonical?: {
+    valid: boolean;
+    name?: string;
+    errors: string[];
+    warnings: string[];
+  };
   payload: {
     nativeManifest: boolean;
     skills: boolean;
     mcp: boolean;
   };
 };
+
+// Read the root plugin.json (when present) and report whether it is an
+// identity-authoritative Agent Plugins v1 manifest. A canonical manifest with
+// fatal violations rejects package identity; unknown-field warnings never do.
+function rootManifestV1State(
+  files: PackageFile[],
+): { validation: V1ManifestValidation; name: string | null } | { invalid: true; validation: V1ManifestValidation } | null {
+  const file = files.find((candidate) => candidate.relativePath === "plugin.json");
+  if (!file) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(file.bytes.toString("utf8"));
+  } catch {
+    // Unparseable JSON cannot claim the canonical schema, so it stays a
+    // legacy-format candidate handled by the existing overlay priority.
+    return null;
+  }
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : undefined;
+  const validation = validatePluginManifestV1(raw);
+  if (!validation.canonical) {
+    const version = agentPluginsSchemaVersion(record?.$schema, "plugin");
+    if (version === null) return null;
+    // An Agent Plugins manifest schema from a different published version is
+    // explicitly unsupported, not silently treated as legacy client data.
+    return {
+      invalid: true,
+      validation: {
+        canonical: true,
+        valid: false,
+        name: null,
+        errors: [
+          `unsupported Agent Plugins manifest schema version ${version}; supported: ${AGENT_PLUGINS_SPEC_VERSION}`,
+        ],
+        warnings: [],
+      },
+    };
+  }
+  return validation.valid ? { validation, name: validation.name } : { invalid: true, validation };
+}
 
 function repositoryFromManifest(raw: unknown): string | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
@@ -166,6 +222,17 @@ function packageFingerprint(files: PackageFile[]): string {
 export async function readPluginPackage(root: string): Promise<PluginPackage> {
   const files = await collectPackageFiles(root);
   const manifests = packageManifestPaths(files);
+
+  // A root plugin.json carrying the exact Agent Plugins v1 schema identifier
+  // is identity-authoritative: it wins over every overlay manifest, and fatal
+  // violations in it reject the whole package identity.
+  const v1 = rootManifestV1State(files);
+  if (v1 && "invalid" in v1) {
+    throw new Error(
+      `plugin package canonical Agent Plugins v1 manifest is invalid (${v1.validation.errors.join("; ")}): ${root}`,
+    );
+  }
+
   const pluginJsonPath = manifests[0];
   if (!pluginJsonPath) {
     throw new Error(`plugin package requires plugin.json metadata: ${root}`);
@@ -173,11 +240,15 @@ export async function readPluginPackage(root: string): Promise<PluginPackage> {
 
   let pluginName: unknown;
   try {
-    const manifest = JSON.parse(
-      (files.find((file) => file.relativePath === pluginJsonPath)?.bytes ?? Buffer.from(""))
-        .toString("utf8"),
-    ) as { name?: unknown };
-    pluginName = manifest.name;
+    if (v1 && "validation" in v1) {
+      pluginName = v1.name ?? "";
+    } else {
+      const manifest = JSON.parse(
+        (files.find((file) => file.relativePath === pluginJsonPath)?.bytes ?? Buffer.from(""))
+          .toString("utf8"),
+      ) as { name?: unknown };
+      pluginName = manifest.name;
+    }
   } catch (err) {
     throw new Error(
       `plugin package plugin.json is not readable: ${err instanceof Error ? err.message : String(err)}`,
@@ -191,7 +262,7 @@ export async function readPluginPackage(root: string): Promise<PluginPackage> {
     files,
     identity: {
       fingerprint: packageFingerprint(files),
-      pluginJsonPath,
+      pluginJsonPath: v1 && "validation" in v1 ? "plugin.json" : pluginJsonPath,
       pluginName,
     },
   };
@@ -215,6 +286,9 @@ function skillsFingerprint(files: PackageFile[]): string | undefined {
       file.relativePath === "SKILL.md" ||
       file.relativePath.startsWith("skills/") ||
       file.relativePath === ".mcp.json" ||
+      // The canonical Agent Plugins v1 MCP document is part of the portable
+      // payload and must move the inventory fingerprint when it changes.
+      file.relativePath === CANONICAL_MCP_PATH ||
       isNativeManifestPath(file.relativePath),
   );
   if (relevant.length === 0) return undefined;
@@ -260,10 +334,40 @@ export async function inspectPluginSource(root: string): Promise<PluginSourceIns
     .map((file) => file.relativePath)
     .filter(isNativeManifestPath)
     .sort(compareNativeManifestPaths);
-  let canonicalName: string | undefined;
-  let sourceRepo: string | undefined;
-  let manifestMcp = false;
 
+  const v1 = rootManifestV1State(snapshot.files);
+  const v1Canonical = v1
+    ? {
+        valid: !("invalid" in v1),
+        name: ("name" in v1 ? v1.name : undefined) ?? undefined,
+        errors: [...v1.validation.errors],
+        warnings: [...v1.validation.warnings],
+      }
+    : undefined;
+
+  let canonicalName: string | undefined;
+  let rootRepository: string | undefined;
+  if (v1 && "validation" in v1) {
+    // A canonical Agent Plugins v1 manifest owns identity; overlay names are
+    // ignored entirely, and an invalid one rejects identity components below.
+    canonicalName = ("name" in v1 ? v1.name : undefined) ?? undefined;
+    // Canonical metadata authority: a VALID root manifest's repository wins
+    // over every overlay repository. Only when the root omits it do overlays
+    // fall through below. An invalid root contributes nothing.
+    if (!("invalid" in v1)) {
+      const rootFile = snapshot.files.find((file) => file.relativePath === CANONICAL_MANIFEST_PATH);
+      if (rootFile) {
+        try {
+          rootRepository = repositoryFromManifest(JSON.parse(rootFile.bytes.toString("utf8")));
+        } catch {
+          // An unparseable root manifest cannot contribute metadata here;
+          // identity was already rejected by validation above when fatal.
+        }
+      }
+    }
+  }
+  let sourceRepo: string | undefined = rootRepository;
+  let manifestMcp = false;
   for (const rel of manifests) {
     try {
       const raw = JSON.parse(
@@ -281,8 +385,12 @@ export async function inspectPluginSource(root: string): Promise<PluginSourceIns
   }
 
   const filePaths = new Set(snapshot.files.map((file) => file.relativePath));
+  // Fatal violations in a canonical manifest reject package identity and
+  // component discovery; only warnings survive as nonfatal diagnostics.
+  const identityRejected = v1 !== null && "invalid" in v1;
+  const canonicalDiscovery = v1 !== null && !identityRejected;
   return {
-    canonicalName,
+    canonicalName: identityRejected ? undefined : canonicalName,
     sourceRepo,
     sourceVersion: versionFromRoot(root),
     // Keep the narrower inventory fingerprint stable for wrapper paths that
@@ -290,19 +398,38 @@ export async function inspectPluginSource(root: string): Promise<PluginSourceIns
     // separately by identifyPluginPackage/hashPluginPackage and owns the store.
     contentFingerprint: skillsFingerprint(snapshot.files),
     manifests,
+    ...(v1Canonical ? { v1Canonical } : {}),
     payload: {
-      nativeManifest: manifests.length > 0,
-      skills:
-        filePaths.has("SKILL.md") ||
-        snapshot.directories.has("skills") ||
-        [...filePaths].some((path) => path.startsWith("skills/")),
-      mcp: manifestMcp || filePaths.has(".mcp.json"),
+      nativeManifest: manifests.length > 0 && !identityRejected,
+      skills: !identityRejected &&
+        (canonicalDiscovery
+          ? // Canonical packages discover skills ONLY as immediate
+            // skills/<name>/SKILL.md children (§6.1): no root SKILL.md, no
+            // empty skills dir, no recursive descendants.
+            [...filePaths].some((path) => /^skills\/[^/]+\/SKILL\.md$/.test(path))
+          : filePaths.has("SKILL.md") ||
+            snapshot.directories.has("skills") ||
+            [...filePaths].some((path) => path.startsWith("skills/"))),
+      mcp: !identityRejected &&
+        (canonicalDiscovery
+          ? // Canonical MCP comes ONLY from the root mcp.json (§7.2.2);
+            // .mcp.json and inline manifest fields are legacy-only sources.
+            filePaths.has(CANONICAL_MCP_PATH)
+          : manifestMcp || filePaths.has(".mcp.json")),
     },
   };
 }
-
 export async function hasSkillManifest(root: string): Promise<boolean> {
   const snapshot = await snapshotPluginSource(root);
+  const v1 = rootManifestV1State(snapshot.files);
+  if (v1 !== null) {
+    // Canonical packages: an invalid or unsupported root manifest rejects
+    // component discovery; a valid one discovers ONLY immediate
+    // skills/<name>/SKILL.md children.
+    if ("invalid" in v1 || !v1.validation.valid) return false;
+    return snapshot.files.some((file) => /^skills\/[^/]+\/SKILL\.md$/.test(file.relativePath));
+  }
+  // Legacy client formats keep the broad discovery behavior.
   return snapshot.files.some(
     (file) => file.relativePath === "SKILL.md" || file.relativePath.endsWith("/SKILL.md"),
   );

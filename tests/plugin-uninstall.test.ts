@@ -1,10 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, writeFile, readFile, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudePluginAdapter } from "../src/plugins/claude.ts";
 import { codexPluginAdapter } from "../src/plugins/codex.ts";
 import { removeArgs, removeSkillNames } from "../src/skills.ts";
+import { resolvePluginMcpServers } from "../src/plugins/mcp.ts";
 import { runPluginUninstall, uninstallHasChanges } from "../src/plugins/uninstall.ts";
 
 let workDir: string;
@@ -660,6 +661,69 @@ describe("runPluginUninstall (orchestrator)", () => {
       command: ["user-command"],
     });
     expect(current.mcp.keep).toBeDefined();
+  });
+
+  test("canonical stdio ownership resolves through the PLUGIN_DATA preview without creating state", async () => {
+    const savedDataHome = process.env.SYNCTHIS_DATA_HOME;
+    const savedXdgData = process.env.XDG_DATA_HOME;
+    delete process.env.SYNCTHIS_DATA_HOME;
+    delete process.env.XDG_DATA_HOME;
+    try {
+      const fooDir = join(workDir, "plugins", "canon");
+      await mkdir(fooDir, { recursive: true });
+      await writeFile(
+        join(fooDir, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "canon",
+        }),
+      );
+      await writeFile(
+        join(fooDir, "mcp.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+          mcpServers: { svc: { type: "stdio", command: "run", args: ["${PLUGIN_DATA}/db"] } },
+        }),
+      );
+      await installFakeClaude(
+        JSON.stringify([{ id: "canon@mkt", enabled: true, installPath: fooDir }]),
+      );
+      await installFakeNpx({ listJson: "[]" });
+
+      // Seed the target with the EXACT value an apply would have lifted
+      // (computed with the same preview intent — no filesystem writes).
+      const dataRoot = join(workDir, ".local", "share");
+      const { servers } = await resolvePluginMcpServers(
+        [{ name: "canon", marketplace: "mkt", path: fooDir, enabled: true }],
+        { dataHome: { intent: "preview", dataRoot } },
+      );
+      const owned = servers.find((s) => s.name === "svc")!.server;
+      const geminiPath = join(workDir, ".gemini", "settings.json");
+      await mkdir(join(geminiPath, ".."), { recursive: true });
+      await writeFile(geminiPath, JSON.stringify({ mcpServers: { svc: owned } }));
+
+      const preview = await runPluginUninstall({
+        plugins: ["canon"],
+        agents: ["gemini-cli"],
+        apply: false,
+      });
+      expect(preview.mcp).toEqual([
+        expect.objectContaining({ agent: "gemini-cli", names: ["svc"] }),
+      ]);
+      // Ownership resolution must not create durable state.
+      let created = true;
+      try {
+        await lstat(dataRoot);
+      } catch {
+        created = false;
+      }
+      expect(created).toBe(false);
+    } finally {
+      if (savedDataHome === undefined) delete process.env.SYNCTHIS_DATA_HOME;
+      else process.env.SYNCTHIS_DATA_HOME = savedDataHome;
+      if (savedXdgData === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = savedXdgData;
+    }
   });
 
   test("an unreadable degraded MCP target is a reported failure and is never mutated", async () => {

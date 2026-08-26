@@ -34,6 +34,7 @@ export const TAGLINE = "Install a plugin once. Use it everywhere.";
 export const COMMANDS: CommandRow[] = [
   { cmd: "syncthis sync", desc: "reconcile installed plugins everywhere" },
   { cmd: "syncthis plugins list", desc: "show readable plugin state" },
+  { cmd: "syncthis plugins enable|disable", desc: "turn installed plugins on/off" },
   { cmd: "syncthis plugins rm <name…> --all", desc: "guarded plugin removal" },
   { cmd: "syncthis doctor", desc: "source and outcome diagnostics" },
   { cmd: "syncthis update", desc: "update Syncthis to latest" },

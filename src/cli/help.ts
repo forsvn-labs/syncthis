@@ -1,11 +1,14 @@
 export const HELP = `Syncthis — install a plugin once. Use it everywhere.
 
 usage:
-  syncthis                          interactive control center (or this help if non-TTY)
+  syncthis                          interactive plugin hub (or this help if non-TTY)
   syncthis sync [--dry-run]         discover and reconcile installed plugins everywhere
   syncthis plugins list              read-only native plugin overview
   syncthis plugins rm <name…> --all | --agents <a,b,c> [--yes] [--dry-run] [--keep-data]
                                      guarded plugin removal
+  syncthis plugins enable <name…> --all | --agents <a,b,c> [--scope user|project|local] [--yes] [--dry-run]
+                                     turn installed plugins on
+  syncthis plugins disable <name…> …  turn installed plugins off
   syncthis doctor                    read-only source and outcome diagnostics
   syncthis update [--dry-run]        update the Syncthis executable
   syncthis version                   print the installed version
@@ -13,10 +16,13 @@ usage:
 
 flags:
   --dry-run       report plugin-target outcomes without writing.
-  --all           select every supported target for removal.
-  --agents <list> select comma-separated targets for removal.
-  --keep-data     keep Claude plugin data on uninstall.
-  --yes           skip confirmation prompts for destructive removal.
+  --all           select every registered target for the plugin operation.
+  --agents <list> select an exact comma-separated target list.
+  --keep-data     keep plugin data where the native uninstall supports it
+                  (currently Claude Code and Grok Build).
+  --yes           skip the confirmation prompt for a guarded write.
+  --scope <s>     plugins enable/disable, Claude Code only: user, project, or
+                  local; omit it to let the CLI auto-detect.
 
 compatibility:
   The npm package remains @forsvn/syncthis. Existing configuration,
@@ -31,6 +37,9 @@ export const PLUGINS_HELP = `Syncthis — manage plugins across agents
   syncthis plugins list              read-only native plugin overview
   syncthis plugins rm <name…> --all | --agents <a,b,c>
                                      guarded plugin removal
+  syncthis plugins enable <name…> --all | --agents <a,b,c> [--scope user|project|local]
+                                     turn installed plugins on
+  syncthis plugins disable <name…> …  turn installed plugins off
 
 Syncthis discovers installed plugins from every readable native source and
 reconciles them across supported targets. Each plugin-target reports exactly one

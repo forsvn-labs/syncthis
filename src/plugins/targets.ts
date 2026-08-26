@@ -11,6 +11,11 @@ import { isSafeRepoSlug, openPluginsArgs, run } from "./shell.ts";
 
 const CURSOR_PLUGIN_INSTALL_TIMEOUT_MS = 180_000;
 
+// Cursor accepts the root Agent Plugins manifest natively today, but Syncthis
+// has no integrated, verified native read or post-apply read-back for it. The
+// target is therefore write/adaptation-only here: installs are pushed through
+// its installer and reported as adapted with an explicit unverified-activation
+// annotation, never as readable or natively verified state.
 function cursorPluginTarget(): PluginReconcileTarget {
   return {
     agent: "cursor",

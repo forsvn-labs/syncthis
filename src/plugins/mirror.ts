@@ -19,6 +19,7 @@
 // plugins, and a name that already exists with a different config is left untouched.
 
 import { claudeMarketplaceClonePaths } from "./claude.ts";
+import { resolveSyncthisDataHome } from "./data-home.ts";
 import { pluginAdapters } from "./index.ts";
 import {
   artifactFromPluginRecord,
@@ -543,7 +544,12 @@ async function pushPluginMcpToCohort(
       skipped: [],
     };
   }
-  const { servers, skipped } = await resolvePluginMcpServers(plugins);
+  // Preview authority: the reported server set always shows canonical stdio
+  // work with its exact PLUGIN_DATA path resolved (validated, never created).
+  const dataRoot = resolveSyncthisDataHome();
+  const { servers, skipped } = await resolvePluginMcpServers(plugins, {
+    dataHome: { intent: "preview", dataRoot },
+  });
   if (!apply || servers.length === 0) {
     return { supported: true, agents, servers, skipped };
   }
@@ -559,7 +565,12 @@ async function pushPluginMcpToCohort(
         .filter(({ plan }) => !covered.has(plan.ownershipKey))
         .map(({ plugin }) => plugin)
       : plugins;
-    const resolved = await resolvePluginMcpServers(loosePlugins);
+    // Apply creates the per-plugin PLUGIN_DATA homes securely (0700) BEFORE
+    // the stdio configs are emitted, so a lifted server never launches
+    // without its data home.
+    const resolved = await resolvePluginMcpServers(loosePlugins, {
+      dataHome: { intent: "create", dataRoot },
+    });
     const serverMap: Record<string, McpServer> = {};
     for (const s of resolved.servers) serverMap[s.name] = s.server;
     const adapter = findAdapter(agentId);

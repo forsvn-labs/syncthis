@@ -11,6 +11,7 @@
 // reported, not guessed at.
 
 import { claudeMarketplaceClonePaths } from "./claude.ts";
+import { resolveSyncthisDataHome } from "./data-home.ts";
 import { pluginAdapters } from "./index.ts";
 import {
   artifactFromPluginRecord,
@@ -217,7 +218,11 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
       // Read+diff each agent so the dry-run reports only what would actually be added
       // (additive, conflict-safe) — not every bundled server regardless of what's present.
       for (const agent of scopedMcpCohort) {
-        const { servers } = await resolvePluginMcpServers(loosePluginsFor(agent));
+        // Preview shows canonical stdio work with its exact PLUGIN_DATA path
+        // validated — never created.
+        const { servers } = await resolvePluginMcpServers(loosePluginsFor(agent), {
+          dataHome: { intent: "preview", dataRoot: resolveSyncthisDataHome() },
+        });
         const serverMap: Record<string, McpServer> = {};
         for (const s of servers) serverMap[s.name] = s.server;
         const adapter = findAdapter(agent);
@@ -301,7 +306,11 @@ export async function runPluginAdd(opts: PluginAddRunOpts): Promise<PluginAddRep
   if (scopedMcpCohort.length) {
     for (const agentId of scopedMcpCohort) {
       tick(`mcp → ${agentId}`);
-      const { servers } = await resolvePluginMcpServers(loosePluginsFor(agentId));
+      // Apply creates per-plugin PLUGIN_DATA homes securely before emitting
+      // the stdio configs that reference them.
+      const { servers } = await resolvePluginMcpServers(loosePluginsFor(agentId), {
+        dataHome: { intent: "create", dataRoot: resolveSyncthisDataHome() },
+      });
       const serverMap: Record<string, McpServer> = {};
       for (const s of servers) serverMap[s.name] = s.server;
       const adapter = findAdapter(agentId);

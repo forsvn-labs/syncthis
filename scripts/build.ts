@@ -4,7 +4,7 @@
 // syncthis is written in TypeScript and run directly by Bun in development
 // (`bun bin/syncthis.ts`). For distribution we bundle everything — all runtime
 // deps inlined — into dist/syncthis.mjs and rewrite the shebang to `node`, so
-// `npx @forsvn/syncthis` works for any Node >=18 user without Bun installed and
+// `npx @forsvn/syncthis` works for any Node >=22 user without Bun installed and
 // without installing a single transitive dependency. The runtime deps therefore
 // live in devDependencies; they're compiled in here, not shipped as node_modules.
 import { $ } from "bun";
