@@ -1,0 +1,49 @@
+# dependencies (bun install)
+node_modules
+
+# build output
+out
+dist
+*.tgz
+# …but the committed demo GIFs live under docs/demos/out/ (not build output).
+!docs/demos/out/
+docs/demos/out/*
+!docs/demos/out/*.gif
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+
+# dotenv
+.env
+.env.*.local
+.env.local
+
+# caches
+.cache
+*.tsbuildinfo
+
+# IDE
+.idea
+.vscode
+.cursor
+
+# macOS
+.DS_Store
+
+# syncthis backups (in case anyone runs the tool inside this repo)
+*.syncthis.bak
+
+# agent process artifacts (specs, plans, review/cleanup records)
+.agents/
+.forsvn/
+.serena/
+PLAN-*.md
+
+# internal working documents (handoffs, plans, agent-config notes) — kept locally, not published
+.internal/
+internal.local/

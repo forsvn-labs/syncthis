@@ -1,0 +1,22 @@
+{
+  "product": "syncthis",
+  "displayName": "Syncthis",
+  "what": "Cross-client sync, adaptation, and verification layer for Agent Plugins",
+  "valueProposition": "Install a plugin once. Use it everywhere.",
+  "pluginStandard": "https://agent-plugins.org/",
+  "nativePluginHosts": ["claude-code", "codex", "github-copilot", "grok-build"],
+  "writeOnlyPluginHosts": ["cursor"],
+  "skillAdaptationHosts": ["gemini-cli", "kimi-cli", "antigravity", "github-copilot", "windsurf", "opencode", "openclaw", "hermes-agent", "goose", "pi", "cline", "prime-agent"],
+  "opsFolder": "./",
+  "primaryRepo": "hungv47/ipse",
+  "publicMirror": "forsvn-labs/syncthis",
+  "npm": "@forsvn/syncthis",
+  "currentVersion": "0.21.0",
+  "liveUrl": null,
+  "surfaces": [
+    { "type": "cli", "dir": "../app/", "sourceRepo": "hungv47/ipse", "repo": "forsvn-labs/syncthis", "url": "https://www.npmjs.com/package/@forsvn/syncthis", "marketing": false }
+  ],
+  "brand": { "path": "brand/", "status": "stub", "inherits": "forsvn-house" },
+  "parent": "forsvn-house",
+  "notes": "Agent Plugins is canonical; Syncthis is the portability layer. The standalone landing page is offline, so the public mirror README and npm page are the active public surfaces."
+}

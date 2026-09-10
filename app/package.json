@@ -1,0 +1,82 @@
+{
+  "name": "@forsvn/syncthis",
+  "version": "0.21.0",
+  "description": "Syncthis — install a plugin once. Use it everywhere across AI coding agents with native, adapted, partial, blocked, or unsupported outcomes. Runs on Node.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Le Vinh Hung <levinhhungg@gmail.com>",
+  "homepage": "https://github.com/forsvn-labs/syncthis#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/forsvn-labs/syncthis.git"
+  },
+  "bugs": {
+    "url": "https://github.com/forsvn-labs/syncthis/issues"
+  },
+  "keywords": [
+    "plugins",
+    "cross-agent-plugins",
+    "plugin-sync",
+    "sync",
+    "claude",
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini",
+    "kimi",
+    "opencode",
+    "windsurf",
+    "antigravity",
+    "github-copilot",
+    "openclaw",
+    "hermes",
+    "goose",
+    "pi",
+    "cline",
+    "grok-build",
+    "prime-agent",
+    "agent-plugins",
+    "ai-agents",
+    "ai-tools",
+    "cli"
+  ],
+  "bin": {
+    "syncthis": "dist/syncthis.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.0.0"
+  },
+  "scripts": {
+    "test": "bun test --timeout 60000 --max-concurrency 1",
+    "lint": "oxlint",
+    "typecheck": "bunx tsc --noEmit",
+    "build": "bun scripts/build.ts",
+    "prepublishOnly": "bun run test && bun run typecheck && bun run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.81.0",
+    "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
+    "@types/react": "^19.2.14",
+    "ink": "^7.0.2",
+    "ink-gradient": "^4.0.0",
+    "js-yaml": "^4.1.0",
+    "json5": "^2.2.3",
+    "oxlint": "1.81.0",
+    "react": "^19.2.6",
+    "smol-toml": "^1.3.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
