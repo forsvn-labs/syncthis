@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Syncthis host directories — before / after</title>
+  <style>
+    :root {
+      --paper: #f6f1e8;
+      --ink: #2a2724;
+      --faint: #6f6a64;
+      --line: #ddd6c8;
+      --before: #efe6d4;
+      --after: #e7efe4;
+      --accent: #2f5d3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.4 ui-sans-serif, system-ui, sans-serif;
+    }
+    header {
+      padding: 28px 32px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+    p { margin: 0; color: var(--faint); max-width: 70ch; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      vertical-align: top;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      font-weight: 600;
+      background: #efeae0;
+      position: sticky;
+      top: 0;
+    }
+    td.agent { font-weight: 600; white-space: nowrap; }
+    td.before { background: var(--before); }
+    td.after { background: var(--after); }
+    code { font-family: ui-monospace, ui-monospace, Menlo, monospace; font-size: 12px; }
+    .none { color: var(--faint); }
+    .tag {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: 0.02em;
+      padding: 1px 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent);
+      margin-left: 6px;
+    }
+    caption { caption-side: bottom; padding: 16px 32px 28px; color: var(--faint); text-align: left; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Syncthis writes into the directory each agent actually loads</h1>
+    <p>Before: Cursor was <code>npx plugins add</code> into <code>~/.cursor/extensions</code> with no local Agent Plugins drop, and other hosts were MCP/skills-only. After: a host map plus managed copies in the real load path. Cursor stays write-only.</p>
+  </header>
+  <table>
+    <thead>
+      <tr>
+        <th>Agent</th>
+        <th>Before (plugin write)</th>
+        <th>After (plugin write)</th>
+        <th>Skills / MCP after</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="agent">Claude Code</td>
+        <td class="before">CLI <code>claude plugin</code> · inventory <code>~/.claude/plugins</code></td>
+        <td class="after">same native CLI home <code>~/.claude/plugins</code> <span class="tag">verified</span></td>
+        <td><code>~/.claude/skills</code> · <code>~/.claude.json</code></td>
+      </tr>
+      <tr>
+        <td class="agent">Codex</td>
+        <td class="before">CLI <code>codex plugin</code> · inventory <code>~/.codex/plugins</code></td>
+        <td class="after">same native CLI home <code>~/.codex/plugins</code> <span class="tag">verified</span></td>
+        <td><code>~/.codex/skills</code> · <code>~/.codex/config.toml</code></td>
+      </tr>
+      <tr>
+        <td class="agent">GitHub Copilot</td>
+        <td class="before">CLI only · not a directory drop</td>
+        <td class="after">CLI + inventory <code>~/.copilot/installed-plugins</code> · still not a drop write <span class="tag">verified</span></td>
+        <td><code>~/.copilot/skills</code> · <code>~/.copilot/mcp-config.json</code></td>
+      </tr>
+      <tr>
+        <td class="agent">Grok Build</td>
+        <td class="before">CLI <code>grok plugin</code></td>
+        <td class="after">same native CLI home <code>~/.grok/installed-plugins</code> <span class="tag">verified</span></td>
+        <td><code>~/.grok/skills</code></td>
+      </tr>
+      <tr>
+        <td class="agent">Cursor</td>
+        <td class="before"><code>npx plugins add --target cursor</code> → <code>~/.cursor/extensions</code>. No local Agent Plugins folder. Write-only, no read-back.</td>
+        <td class="after">managed copy in <code>~/.cursor/plugins/local</code> when a root <code>plugin.json</code> or <code>.cursor-plugin/plugin.json</code> already exists. Will not invent one from a Claude overlay. <span class="tag">write-only</span></td>
+        <td><code>~/.cursor/skills</code> · <code>~/.cursor/mcp.json</code></td>
+      </tr>
+      <tr>
+        <td class="agent">Gemini CLI</td>
+        <td class="before">MCP / skills only</td>
+        <td class="after">no Agent Plugins drop <span class="tag">none</span></td>
+        <td><code>~/.gemini/skills</code> · <code>~/.gemini/settings.json</code></td>
+      </tr>
+      <tr>
+        <td class="agent">Kimi</td>
+        <td class="before">skills / MCP degrade</td>
+        <td class="after">no plugin ABI <span class="tag">none</span></td>
+        <td><code>~/.agents/skills</code> · <code>~/.kimi/mcp.json</code></td>
+      </tr>
+      <tr>
+        <td class="agent">OpenCode</td>
+        <td class="before">MCP config</td>
+        <td class="after">hook modules at <code>~/.config/opencode/plugins</code> are not Agent Plugins packages <span class="tag">none</span></td>
+        <td><code>~/.config/opencode/skills</code> · <code>~/.config/opencode/opencode.json</code></td>
+      </tr>
+      <tr>
+        <td class="agent">Windsurf / OpenClaw / Hermes / Goose / Antigravity</td>
+        <td class="before">MCP adapters only</td>
+        <td class="after">skills dirs mapped; still no Agent Plugins ABI <span class="tag">none</span></td>
+        <td>each agent’s documented skills + MCP file</td>
+      </tr>
+      <tr>
+        <td class="agent">Pi / Cline / Prime</td>
+        <td class="before">skill-only cohort</td>
+        <td class="after">skills in <code>~/.pi/agent/skills</code> or <code>~/.agents/skills</code> <span class="tag">none</span></td>
+        <td>no MCP adapter</td>
+      </tr>
+      <tr>
+        <td class="agent">BB</td>
+        <td class="before">not a Syncthis target</td>
+        <td class="after">still not a target — <code>~/.bb/plugins</code> is BB’s own ABI <span class="tag">none</span></td>
+        <td>—</td>
+      </tr>
+    </tbody>
+    <caption>Doctor inventories host drift without promoting a directory listing to native activation. <code>plugins rm</code> removes only Syncthis-managed copies.</caption>
+  </table>
+</body>
+</html>
