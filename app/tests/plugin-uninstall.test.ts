@@ -7,6 +7,7 @@ import { codexPluginAdapter } from "../src/plugins/codex.ts";
 import { removeArgs, removeSkillNames } from "../src/skills.ts";
 import { resolvePluginMcpServers } from "../src/plugins/mcp.ts";
 import { runPluginUninstall, uninstallHasChanges } from "../src/plugins/uninstall.ts";
+import { writeHostPlugin } from "../src/plugins/host-sync.ts";
 
 let workDir: string;
 let originalHome: string | undefined;
@@ -825,12 +826,50 @@ describe("runPluginUninstall (orchestrator)", () => {
     expect(r.requiredSkillAgents).toEqual(["codex"]);
   });
 
-  test("cursor is reported unsupported, nothing to do when the plugin is absent everywhere", async () => {
+  test("cursor host directories are removable; absent plugins are not unsupported", async () => {
     await installFakeClaude(JSON.stringify([]));
     await installFakeCodex(codexTable([["other@mkt", "installed, enabled", "1.0.0", "/c/other"]]));
     await installFakeNpx({ listJson: "[]" });
     const r = await runPluginUninstall({ plugins: ["ghost"], agents: ["claude-code", "codex", "cursor"], apply: false });
-    expect(r.unsupportedAgents).toContain("cursor");
+    expect(r.unsupportedAgents).not.toContain("cursor");
+    expect(r.hostPlugins ?? []).toEqual([]);
     expect(uninstallHasChanges(r)).toBe(false);
+  });
+
+  test("removes a managed Cursor host plugin and leaves unmanaged neighbors", async () => {
+    await installFakeClaude(JSON.stringify([]));
+    await installFakeNpx({ listJson: "[]" });
+    const source = join(workDir, "src-foo");
+    await mkdir(join(source, ".claude-plugin"), { recursive: true });
+    await mkdir(join(source, "skills", "one"), { recursive: true });
+    await writeFile(join(source, "plugin.json"), JSON.stringify({ name: "foo" }));
+    await writeFile(join(source, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "foo" }));
+    await writeFile(join(source, "skills", "one", "SKILL.md"), "---\nname: one\n---\n");
+    const written = await writeHostPlugin("cursor", source, { dryRun: false });
+    expect(written.status).toBe("created");
+
+    const unmanaged = join(workDir, ".cursor/plugins/local/stray");
+    await mkdir(unmanaged, { recursive: true });
+    await writeFile(join(unmanaged, "plugin.json"), JSON.stringify({ name: "stray" }));
+
+    const preview = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["cursor"],
+      apply: false,
+    });
+    expect(preview.unsupportedAgents).toEqual([]);
+    expect(preview.hostPlugins).toEqual([
+      expect.objectContaining({ agent: "cursor", name: "foo", managed: true, present: true }),
+    ]);
+    expect(uninstallHasChanges(preview)).toBe(true);
+
+    const applied = await runPluginUninstall({
+      plugins: ["foo"],
+      agents: ["cursor"],
+      apply: true,
+    });
+    expect(applied.hostResults?.some((item) => item.name === "foo" && item.message === "removed")).toBe(true);
+    expect(await Bun.file(join(workDir, ".cursor/plugins/local/foo/plugin.json")).exists()).toBe(false);
+    expect(await Bun.file(join(unmanaged, "plugin.json")).exists()).toBe(true);
   });
 });

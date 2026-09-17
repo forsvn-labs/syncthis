@@ -1,8 +1,8 @@
 # Syncthis progress
 
-Updated: 2026-08-28
+Updated: 2026-09-17
 Owner: Hung
-State: shipped and maintained; current release 0.21.0
+State: shipped and maintained; current release 0.21.0; host-directory sync is on `feat/plugin-host-directory-sync`
 
 ## Resume here
 
@@ -12,12 +12,9 @@ Read `VISION.md`, this file, `ROADMAP.md`, `app/AGENTS.md`, and `app/CHANGELOG.m
 
 - Private source is `app/`; npm and `forsvn-labs/syncthis` are distributions.
 - The reviewed 0.21.0 plugin hub and activation hardening are integrated on `main`.
+- Host directory mapping writes local packages into each agent's real plugin/skills/MCP paths. Cursor local drops use `~/.cursor/plugins/local`, stay write-only, and copy only an existing root `plugin.json` or `.cursor-plugin/plugin.json`.
 - Retired Syncthis worktrees and lane branches are not sources of truth.
-- All 591 tests, TypeScript verification, and the self-contained build passed on 2026-08-28.
-- The 2026-08-28 mirror dry-run differs only in the generated instruction surface
-  (`AGENTS.md` replaces `CLAUDE.md`). Nothing was pushed.
 
 ## Next action
 
-Decide whether the instruction-surface change belongs in the next release, then verify npm and
-mirror version parity. Choose further client work only from a reproducible compatibility gap.
+Open the plugin-host-directory-sync PR after verification on this branch. Keep Cursor off the native registry until a readable activation contract exists. Then verify npm and mirror version parity.

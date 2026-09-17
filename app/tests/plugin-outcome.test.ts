@@ -43,6 +43,8 @@ describe("canonical plugin outcomes", () => {
   test("maps retained native detail without erasing it", () => {
     expect(nativeOutcome({ status: "present", nativeMode: "verified" })).toBe("native");
     expect(nativeOutcome({ status: "installed", nativeMode: "verified" })).toBe("native");
+    expect(nativeOutcome({ status: "present", nativeMode: "write-only" })).toBe("adapted");
+    expect(nativeOutcome({ status: "would-install", nativeMode: "write-only" })).toBe("adapted");
     expect(nativeOutcome({ status: "unverified", nativeMode: "write-only" })).toBe("adapted");
     expect(nativeOutcome({ status: "unsupported", nativeMode: "none" })).toBe("unsupported");
     expect(nativeOutcome({ status: "failed", nativeMode: "verified" })).toBe("blocked");

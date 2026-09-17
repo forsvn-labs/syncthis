@@ -57,6 +57,8 @@ src/plugins/store.ts         managed source-independent package materialization
 src/plugins/degrade.ts       private target-specific projection decisions
 src/plugins/outcome.ts       canonical five-outcome composition
 src/plugins/targets.ts       verified native, write-only, and no-native target registry
+src/plugins/host-map.ts      agent → plugin dir / skills dir / MCP file map
+src/plugins/host-sync.ts     directory-drop writes, managed markers, and host inventory
 src/plugins/add.ts           retained bounded plugin-add compatibility path
 src/plugins/mirror.ts        retained legacy mirror compatibility path
 src/plugins/uninstall.ts     guarded plugin removal and private projection cleanup
@@ -64,7 +66,7 @@ src/skills.ts                internal projection mechanism; not a public product
 src/adapters/                internal lower-layer config adapters, including private projections
 ```
 
-Readable native plugin sources are Claude Code, Codex, GitHub Copilot, and Grok Build. Cursor is a write-only target and must never be reported as native. Prime Agent, Pi, and Cline are skill-backed adaptation targets; Cline's separate TypeScript plugin ABI is not Agent Plugins-native. Targets without a proven native ABI may receive private adaptations when the exact artifact supports them.
+Readable native plugin sources are Claude Code, Codex, GitHub Copilot, and Grok Build. Cursor is a write-only target: Syncthis copies local packages into `~/.cursor/plugins/local` (the 2026 Agent Plugins load path) when they already have a root `plugin.json` or `.cursor-plugin/plugin.json`, but directory listing is not native activation, so Cursor must never be reported as native. Do not synthesize a competing Agent Plugins manifest. `npx plugins add --target cursor` remains a repo-only fallback because it still copies into `~/.cursor/extensions`. Prime Agent, Pi, and Cline are skill-backed adaptation targets; Cline's separate TypeScript plugin ABI is not Agent Plugins-native. Targets without a proven native ABI may receive private adaptations when the exact artifact supports them.
 
 `plugins add`, `plugins mirror`, and top-level `add`, `mirror`, and `run` remain callable compatibility paths, but are not advertised or used by the default workflow. Do not expand them as part of the plugin-first core. The Ink control center must call the same core services as the CLI: `runSync`, `runPluginUninstall`, and the self-update service. It must not call `runPluginAdd` or fork lifecycle logic into React state. Sync previews the complete discovered set before a separate confirmation step. Removal selects plugins, then an explicit all-or-agent scope, then previews before a separate confirmation step.
 

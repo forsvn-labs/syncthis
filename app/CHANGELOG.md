@@ -2,6 +2,19 @@
 
 All notable changes to `@forsvn/syncthis` are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Host directory map.** Each supported agent now has an explicit plugin-directory / skills-directory / MCP-file target. Sync writes local Agent Plugins packages and skill trees into the directories those agents actually load, with `.syncthis-managed.json` markers, unmanaged-conflict preservation, and `0600` on secret-bearing files.
+- **Doctor host inventory.** `syncthis doctor` reports per-agent host paths, managed vs unmanaged directory drops, and write-only notes. Directory presence is inventory, not native activation.
+
+### Changed
+- **Welcome and control center drop neon cyan/green.** The wordmark is quiet forest on the terminal, with one recommended next step, instead of a hacker-CLI gradient.
+- **Doctor host inventory is a designed table.** Each agent is one row: plugin dir, skills, MCP, ABI. Notes sit under the table. Directory presence is still inventory, not native activation.
+- **Cursor local plugins land in `~/.cursor/plugins/local`.** That is the 2026 Agent Plugins load path. Syncthis copies an existing root `plugin.json` or `.cursor-plugin/plugin.json` and never synthesizes a competing Agent Plugins manifest from another client's overlay. `npx plugins@1.3.4 add --target cursor` remains a repository-only fallback because it still copies into `~/.cursor/extensions`. Cursor stays write-only/`adapted`; listing `local/` is not a native read-back.
+- **Skill adaptation prefers the host skills directory** when a validated local package exists (Pi, Gemini, OpenCode, Cline, and the rest of the skill map), instead of routing every local tree through `npx skills add`.
+- **Removal can delete managed host copies.** `plugins rm` removes Syncthis-managed Cursor local plugins and adapted skill directories in scope, and still leaves unmanaged neighbors untouched.
+
 ## [0.21.0] — 2026-08-26
 
 ### Added

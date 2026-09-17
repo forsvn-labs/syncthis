@@ -60,6 +60,7 @@ export { MAIN_MENU } from "./cli/main-menu.ts";
 export type { MainChoice, MainMenuItem } from "./cli/main-menu.ts";
 
 import { MAIN_MENU } from "./cli/main-menu.ts";
+import { FOREST } from "./cli/palette.ts";
 
 function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
@@ -143,7 +144,7 @@ function SelectionList(props: {
         // wrap and push the footer off-screen.
         const fitted = fitSelectionItem({ label: item.label, hint: item.hint }, props.width);
         return (
-          <Text key={item.value} color={active ? "cyan" : undefined} bold={active}>
+          <Text key={item.value} color={active ? FOREST : undefined} bold={active}>
             {active ? "❯" : " "} {props.selected ? (checked ? "◼" : "◻") : " "} {fitted.label}
             {fitted.hint ? <Text dimColor> — {fitted.hint}</Text> : null}
           </Text>
@@ -523,7 +524,7 @@ function ControlCenter() {
   let footer = "↑↓ navigate · enter open · q quit";
 
   if (action.loading) {
-    content = <Text color="cyan">{truncateToWidth(`◒ ${action.loading}…`, bodyColumns)}</Text>;
+    content = <Text color={FOREST}>{truncateToWidth(`◒ ${action.loading}…`, bodyColumns)}</Text>;
     footer = "Please wait. Safe previews never write.";
   } else if (action.error) {
     content = <Text color="red">{truncateToWidth(`Blocked: ${neutralPluginText(action.error, "operation failed")}`, bodyColumns)}</Text>;
@@ -675,7 +676,7 @@ function ControlCenter() {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box justifyContent="space-between">
-        <Text bold color="cyan">{header.wordmark}</Text>
+        <Text bold color={FOREST}>{header.wordmark}</Text>
         {header.title ? <Text dimColor>{header.title}</Text> : null}
       </Box>
       <Text dimColor>{truncateToWidth(TAGLINE, bodyColumns)}</Text>

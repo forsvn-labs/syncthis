@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Syncthis host map</title>
+  <style>
+    :root {
+      --paper: #f3eadc;
+      --ink: #241f1b;
+      --faint: #6e675e;
+      --line: #d8cebc;
+      --after: #d7e4d4;
+      --forest: #2f5d3a;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+    }
+    body {
+      font: 12.5px/1.25 "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+    }
+    .sheet { padding: 22px 28px 20px; }
+    .kicker {
+      margin: 0 0 5px;
+      font: 600 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--forest);
+    }
+    h1 {
+      margin: 0 0 5px;
+      font-size: 21px;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+      line-height: 1.12;
+    }
+    .lede {
+      margin: 0 0 14px;
+      max-width: 88ch;
+      color: var(--faint);
+      font-size: 12px;
+      line-height: 1.32;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    col.agent { width: 11.5rem; }
+    col.plugin { width: 32%; }
+    col.skills { width: 22%; }
+    col.mcp { width: 24%; }
+    col.abi { width: 7.5rem; }
+    th {
+      position: sticky;
+      top: 0;
+      padding: 5px 9px 6px;
+      text-align: left;
+      font: 600 9.5px/1.2 ui-monospace, "SF Mono", Menlo, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--faint);
+      background: var(--paper);
+      border-bottom: 1px solid var(--ink);
+    }
+    td {
+      padding: 7px 9px;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      font: 11px/1.28 ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    td.agent {
+      font: 600 13px/1.2 "Iowan Old Style", Palatino, Georgia, serif;
+      white-space: nowrap;
+      padding-right: 14px;
+    }
+    td.plugin {
+      background: var(--after);
+      box-shadow: inset 3px 0 0 var(--forest);
+    }
+    td.plugin .was {
+      display: block;
+      margin-top: 2px;
+      font-size: 10px;
+      line-height: 1.25;
+      color: var(--faint);
+      white-space: normal;
+    }
+    .abi {
+      display: inline-block;
+      padding: 0 6px;
+      border: 1px solid #9bb59a;
+      border-radius: 999px;
+      font-size: 10px;
+      letter-spacing: 0.02em;
+      color: var(--forest);
+      white-space: nowrap;
+    }
+    .abi.none { color: var(--faint); border-color: var(--line); }
+    caption {
+      caption-side: bottom;
+      padding: 10px 0 0;
+      text-align: left;
+      color: var(--faint);
+      font-size: 11.5px;
+    }
+    code { font-family: inherit; font-size: inherit; }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    <p class="kicker">Syncthis · host map</p>
+    <h1>Each agent is written in the directory it actually loads</h1>
+    <p class="lede">Plugin dir is the load path after this change. Skills and MCP stay private adaptation surfaces. Cursor is write-only: copy an existing root <code>plugin.json</code>, never invent one. Directory listing is inventory, not native activation.</p>
+    <table>
+      <colgroup>
+        <col class="agent" />
+        <col class="plugin" />
+        <col class="skills" />
+        <col class="mcp" />
+        <col class="abi" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Agent</th>
+          <th>Plugin dir</th>
+          <th>Skills</th>
+          <th>MCP</th>
+          <th>ABI</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="agent">Claude Code</td>
+          <td class="plugin"><code>~/.claude/plugins</code></td>
+          <td><code>~/.claude/skills</code></td>
+          <td><code>~/.claude.json</code></td>
+          <td><span class="abi">verified</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Codex</td>
+          <td class="plugin"><code>~/.codex/plugins</code></td>
+          <td><code>~/.codex/skills</code></td>
+          <td><code>~/.codex/config.toml</code></td>
+          <td><span class="abi">verified</span></td>
+        </tr>
+        <tr>
+          <td class="agent">GitHub Copilot</td>
+          <td class="plugin"><code>~/.copilot/installed-plugins</code><span class="was">was CLI-only, still not a drop write</span></td>
+          <td><code>~/.copilot/skills</code></td>
+          <td><code>~/.copilot/mcp-config.json</code></td>
+          <td><span class="abi">verified</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Grok Build</td>
+          <td class="plugin"><code>~/.grok/installed-plugins</code></td>
+          <td><code>~/.grok/skills</code></td>
+          <td>—</td>
+          <td><span class="abi">verified</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Cursor</td>
+          <td class="plugin"><code>~/.cursor/plugins/local</code><span class="was">was <code>npx plugins add</code> → <code>~/.cursor/extensions</code> · copies existing manifest only</span></td>
+          <td><code>~/.cursor/skills</code></td>
+          <td><code>~/.cursor/mcp.json</code></td>
+          <td><span class="abi">write-only</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Gemini CLI</td>
+          <td class="plugin">—<span class="was">no Agent Plugins drop</span></td>
+          <td><code>~/.gemini/skills</code></td>
+          <td><code>~/.gemini/settings.json</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Kimi</td>
+          <td class="plugin">—<span class="was">no proven non-interactive plugin ABI</span></td>
+          <td><code>~/.agents/skills</code></td>
+          <td><code>~/.kimi/mcp.json</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Antigravity</td>
+          <td class="plugin">—</td>
+          <td><code>~/.gemini/antigravity/skills</code></td>
+          <td><code>~/.gemini/antigravity/mcp_config.json</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Windsurf</td>
+          <td class="plugin">—</td>
+          <td><code>~/.codeium/windsurf/skills</code></td>
+          <td><code>~/.codeium/windsurf/mcp_config.json</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">OpenCode</td>
+          <td class="plugin">—<span class="was"><code>~/.config/opencode/plugins</code> is hook modules, not Agent Plugins</span></td>
+          <td><code>~/.config/opencode/skills</code></td>
+          <td><code>~/.config/opencode/opencode.json</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">OpenClaw</td>
+          <td class="plugin">—</td>
+          <td><code>~/.openclaw/skills</code></td>
+          <td><code>~/.openclaw/openclaw.json</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Hermes</td>
+          <td class="plugin">—</td>
+          <td><code>~/.hermes/skills</code></td>
+          <td><code>~/.hermes/config.yaml</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Goose</td>
+          <td class="plugin">—</td>
+          <td><code>$XDG_CONFIG_HOME/goose/skills</code></td>
+          <td><code>$XDG_CONFIG_HOME/goose/config.yaml</code></td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Pi</td>
+          <td class="plugin">—</td>
+          <td><code>~/.pi/agent/skills</code></td>
+          <td>—</td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Cline</td>
+          <td class="plugin">—<span class="was">TypeScript plugin ABI is not Agent Plugins</span></td>
+          <td><code>~/.agents/skills</code></td>
+          <td>—</td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">Prime Agent</td>
+          <td class="plugin">—</td>
+          <td><code>~/.agents/skills</code></td>
+          <td>—</td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+        <tr>
+          <td class="agent">BB</td>
+          <td class="plugin">—<span class="was"><code>~/.bb/plugins</code> is BB’s own ABI · not a Syncthis target</span></td>
+          <td>—</td>
+          <td>—</td>
+          <td><span class="abi none">none</span></td>
+        </tr>
+      </tbody>
+      <caption>Doctor inventories host drift without promoting a directory listing to native activation. <code>plugins rm</code> removes only Syncthis-managed copies.</caption>
+    </table>
+  </div>
+</body>
+</html>

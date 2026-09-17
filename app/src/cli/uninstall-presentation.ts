@@ -58,6 +58,8 @@ export type UninstallPreviewRow =
   | { kind: "mcp-remove"; agent: AgentId; names: string[] }
   | { kind: "mcp-kept"; agent: AgentId; names: string[] }
   | { kind: "mcp-conflict"; agent: AgentId; names: string[] }
+  | { kind: "host-remove"; agent: AgentId; name: string; surface: "plugin" | "skill" }
+  | { kind: "host-keep"; agent: AgentId; name: string; surface: "plugin" | "skill" }
   | { kind: "unsupported"; agent: AgentId }
   | { kind: "ownership-blocked"; agents: AgentId[] };
 
@@ -106,6 +108,22 @@ export function uninstallPreviewRows(report: UninstallReport): UninstallPreviewR
       rows.push({ kind: "mcp-conflict", agent: target.agent, names: target.conflicts });
     }
   }
+  for (const target of report.hostPlugins ?? []) {
+    rows.push({
+      kind: target.managed ? "host-remove" : "host-keep",
+      agent: target.agent,
+      name: target.name,
+      surface: "plugin",
+    });
+  }
+  for (const target of report.hostSkills ?? []) {
+    rows.push({
+      kind: target.managed ? "host-remove" : "host-keep",
+      agent: target.agent,
+      name: target.name,
+      surface: "skill",
+    });
+  }
   for (const agent of report.unsupportedAgents) rows.push({ kind: "unsupported", agent });
   const ownership = uninstallClaudePolicy(report);
   if (ownership.blockedAgents.length) {
@@ -140,6 +158,10 @@ export function renderUninstallPreview(report: UninstallReport): string[] {
         return `keep     ${row.agent} · ${row.names.join(", ")} · still owned elsewhere`;
       case "mcp-conflict":
         return `keep     ${row.agent} · ${row.names.join(", ")} · modified conflict`;
+      case "host-remove":
+        return `remove   ${row.agent} · ${row.name} · host ${row.surface} directory`;
+      case "host-keep":
+        return `keep     ${row.agent} · ${row.name} · not Syncthis-managed`;
       case "unsupported":
         return `blocked  ${row.agent} · removal is not readable or supported`;
       case "ownership-blocked":
@@ -169,6 +191,8 @@ export type UninstallResultRow =
   | { kind: "mcp-skipped"; agent: AgentId; reason: string }
   | { kind: "mcp-note"; agent: AgentId; message: string }
   | { kind: "mcp-conflict"; agent: AgentId; names: string[] }
+  | { kind: "host-removed"; agent: AgentId; name: string }
+  | { kind: "host-blocked"; agent: AgentId; name: string; reason: string }
   | { kind: "unsupported"; agent: AgentId }
   | { kind: "ownership-blocked"; agents: AgentId[] };
 
@@ -232,6 +256,22 @@ export function uninstallResultRows(report: UninstallReport): UninstallResultRow
       rows.push({ kind: "mcp-conflict", agent: result.agent, names: result.conflicts });
     }
   }
+  for (const result of report.hostResults ?? []) {
+    if (result.status === "created") {
+      rows.push({
+        kind: "host-removed",
+        agent: result.agent,
+        name: result.name,
+      });
+    } else if (result.status === "conflict" || result.status === "failed") {
+      rows.push({
+        kind: "host-blocked",
+        agent: result.agent,
+        name: result.name,
+        reason: result.message ?? "host directory was left untouched",
+      });
+    }
+  }
   for (const agent of report.unsupportedAgents) rows.push({ kind: "unsupported", agent });
   const ownership = uninstallClaudePolicy(report);
   if (ownership.blockedAgents.length) {
@@ -271,6 +311,10 @@ export function renderUninstallResult(report: UninstallReport): string[] {
         return null;
       case "mcp-conflict":
         return null;
+      case "host-removed":
+        return `removed  ${row.agent} · ${row.name} · host directory`;
+      case "host-blocked":
+        return `blocked  ${row.agent} · ${row.name} · ${neutralPluginText(row.reason)}`;
       case "unsupported":
         return `blocked  ${row.agent} · removal is not readable or supported`;
       case "ownership-blocked":
