@@ -36,14 +36,21 @@ afterEach(async () => {
   await rm(workDir, { recursive: true, force: true });
 });
 
-async function pluginPackage(name = "foo"): Promise<string> {
-  const root = join(workDir, "src", name);
-  await mkdir(join(root, ".claude-plugin"), { recursive: true });
+async function pluginPackage(
+  name = "foo",
+  kind: "root" | "cursor-plugin" | "claude-overlay" = "root",
+): Promise<string> {
+  const root = join(workDir, "src", `${kind}-${name}`);
   await mkdir(join(root, "skills", "one"), { recursive: true });
-  await writeFile(
-    join(root, ".claude-plugin", "plugin.json"),
-    JSON.stringify({ name }),
-  );
+  if (kind === "root") {
+    await writeFile(join(root, "plugin.json"), JSON.stringify({ name }));
+  } else if (kind === "cursor-plugin") {
+    await mkdir(join(root, ".cursor-plugin"), { recursive: true });
+    await writeFile(join(root, ".cursor-plugin", "plugin.json"), JSON.stringify({ name }));
+  } else {
+    await mkdir(join(root, ".claude-plugin"), { recursive: true });
+    await writeFile(join(root, ".claude-plugin", "plugin.json"), JSON.stringify({ name }));
+  }
   await writeFile(join(root, "skills", "one", "SKILL.md"), "---\nname: one\n---\n");
   await writeFile(
     join(root, "mcp.json"),
@@ -79,7 +86,7 @@ function artifact(pluginRoot: string): PluginInventoryArtifact {
 }
 
 describe("host directory sync", () => {
-  test("copies a Cursor plugin into ~/.cursor/plugins/local with a synthesized root manifest", async () => {
+  test("copies a Cursor plugin into ~/.cursor/plugins/local without inventing a manifest", async () => {
     const source = await pluginPackage();
     const written = await writeHostPlugin("cursor", source, { dryRun: false });
     expect(written.status).toBe("created");
@@ -87,6 +94,7 @@ describe("host directory sync", () => {
 
     const dest = written.path;
     expect(JSON.parse(await readFile(join(dest, "plugin.json"), "utf8"))).toEqual({ name: "foo" });
+    expect(await Bun.file(join(dest, ".claude-plugin/plugin.json")).exists()).toBe(false);
     expect(await readFile(join(dest, "skills/one/SKILL.md"), "utf8")).toContain("name: one");
     expect((await lstat(join(dest, "mcp.json"))).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(join(dest, SYNCTHIS_MARKER), "utf8")).kind).toBe("host-plugin");
@@ -94,6 +102,39 @@ describe("host directory sync", () => {
     const again = await writeHostPlugin("cursor", source, { dryRun: true });
     expect(again.status).toBe("present");
     expect(await findHostPlugin("cursor", "foo")).toMatchObject({ managed: true, name: "foo" });
+  });
+
+  test("copies a Cursor Plugin overlay as-is and does not synthesize root plugin.json", async () => {
+    const source = await pluginPackage("foo", "cursor-plugin");
+    const written = await writeHostPlugin("cursor", source, { dryRun: false });
+    expect(written.status).toBe("created");
+    expect(await Bun.file(join(written.path, "plugin.json")).exists()).toBe(false);
+    expect(JSON.parse(await readFile(join(written.path, ".cursor-plugin/plugin.json"), "utf8"))).toEqual({
+      name: "foo",
+    });
+  });
+
+  test("refuses to synthesize an Agent Plugins manifest from a Claude overlay", async () => {
+    const source = await pluginPackage("foo", "claude-overlay");
+    const written = await writeHostPlugin("cursor", source, { dryRun: false });
+    expect(written.status).toBe("failed");
+    expect(written.message).toMatch(/refusing to synthesize/i);
+    expect(await Bun.file(join(workDir, ".cursor/plugins/local/foo/plugin.json")).exists()).toBe(false);
+
+    const cursor = pluginReconcileTargets().find((target) => target.agent === "cursor");
+    if (!cursor || cursor.mode !== "write-only") throw new Error("missing cursor target");
+    const report = await runPluginReconcile({
+      dryRun: true,
+      inventory: { artifacts: [artifact(source)], sources: [], errors: [] },
+      targets: [cursor],
+    });
+    expect(report.results[0]).toMatchObject({
+      agent: "cursor",
+      nativeMode: "write-only",
+      status: "unsupported",
+      outcome: "unsupported",
+      degradation: expect.objectContaining({ eligible: true, reason: "unsupported-format" }),
+    });
   });
 
   test("refuses to overwrite an unmanaged host plugin directory", async () => {

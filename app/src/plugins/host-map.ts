@@ -14,8 +14,10 @@ import type { AgentId } from "../types.ts";
  *   plugin homes (`~/.claude/plugins`, `~/.codex/plugins`,
  *   `~/.copilot/installed-plugins`, `~/.grok/installed-plugins`).
  * - Cursor Agent Plugins: user-local drop at `~/.cursor/plugins/local`
- *   (root `plugin.json` or `.cursor-plugin/plugin.json`). `npx plugins@1.3.4`
- *   still copies into `~/.cursor/extensions`, which is not that load path.
+ *   (root `plugin.json` or `.cursor-plugin/plugin.json`). Syncthis copies those
+ *   existing manifests and never invents a root plugin.json from another
+ *   client's overlay. `npx plugins@1.3.4` still copies into `~/.cursor/extensions`,
+ *   which is not that load path.
  *   Directory listing is inventory for doctor/idempotency, not native
  *   activation — Cursor may ignore local imports under org policy.
  * - Skills: vercel-labs/skills agent map (global dirs) plus local homes.

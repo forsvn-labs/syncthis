@@ -842,6 +842,7 @@ describe("runPluginUninstall (orchestrator)", () => {
     const source = join(workDir, "src-foo");
     await mkdir(join(source, ".claude-plugin"), { recursive: true });
     await mkdir(join(source, "skills", "one"), { recursive: true });
+    await writeFile(join(source, "plugin.json"), JSON.stringify({ name: "foo" }));
     await writeFile(join(source, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "foo" }));
     await writeFile(join(source, "skills", "one", "SKILL.md"), "---\nname: one\n---\n");
     const written = await writeHostPlugin("cursor", source, { dryRun: false });

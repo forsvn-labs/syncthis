@@ -118,21 +118,19 @@ async function readMarker(root: string): Promise<HostMarker | null> {
   }
 }
 
-function pluginHasRootManifest(pkg: PluginPackage): boolean {
-  return pkg.files.some((file) => file.relativePath === CANONICAL_MANIFEST_PATH);
+const CURSOR_PLUGIN_MANIFEST = ".cursor-plugin/plugin.json";
+
+/** Cursor loads Agent Plugins from root plugin.json, or Cursor Plugins from the overlay. */
+export function isCursorLoadableManifestPath(relativePath: string): boolean {
+  return relativePath === CANONICAL_MANIFEST_PATH || relativePath === CURSOR_PLUGIN_MANIFEST;
 }
 
-function filesForHostPlugin(pkg: PluginPackage): HostFile[] {
-  if (pluginHasRootManifest(pkg)) return pkg.files;
-  return [
-    ...pkg.files,
-    {
-      relativePath: CANONICAL_MANIFEST_PATH,
-      bytes: Buffer.from(`${JSON.stringify({ name: pkg.identity.pluginName }, null, 2)}\n`),
-      mode: 0o644,
-    },
-  ];
+export function packageHasCursorLoadableManifest(pkg: PluginPackage): boolean {
+  return pkg.files.some((file) => isCursorLoadableManifestPath(file.relativePath));
 }
+
+export const MISSING_CURSOR_MANIFEST =
+  "package has no root plugin.json or .cursor-plugin/plugin.json; refusing to synthesize an Agent Plugins manifest";
 
 async function writeTree(destination: string, files: HostFile[]): Promise<void> {
   const directories = new Set<string>([destination]);
@@ -345,6 +343,15 @@ export async function writeHostPlugin(
     };
   }
   const name = pkg.identity.pluginName;
+  if (!packageHasCursorLoadableManifest(pkg)) {
+    return {
+      agent,
+      name,
+      path: host.plugin.path,
+      status: "failed",
+      message: MISSING_CURSOR_MANIFEST,
+    };
+  }
   if (!isSafeIdentifier(name) || name.startsWith("-")) {
     return {
       agent,
@@ -384,7 +391,7 @@ export async function writeHostPlugin(
     if (opts.dryRun) {
       return { agent, name, path: dest, status: "would-create" };
     }
-    await replaceManagedTree(dest, filesForHostPlugin(pkg), marker);
+    await replaceManagedTree(dest, pkg.files, marker);
     return { agent, name, path: dest, status: "created" };
   } catch (err) {
     return {

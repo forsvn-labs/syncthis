@@ -9,7 +9,7 @@ All notable changes to `@forsvn/syncthis` are documented here. Format loosely fo
 - **Doctor host inventory.** `syncthis doctor` reports per-agent host paths, managed vs unmanaged directory drops, and write-only notes. Directory presence is inventory, not native activation.
 
 ### Changed
-- **Cursor local plugins land in `~/.cursor/plugins/local`.** That is the 2026 Agent Plugins load path. `npx plugins@1.3.4 add --target cursor` remains a repository-only fallback because it still copies into `~/.cursor/extensions`. Cursor stays write-only/`adapted`; listing `local/` is not a native read-back.
+- **Cursor local plugins land in `~/.cursor/plugins/local`.** That is the 2026 Agent Plugins load path. Syncthis copies an existing root `plugin.json` or `.cursor-plugin/plugin.json` and never synthesizes a competing Agent Plugins manifest from another client's overlay. `npx plugins@1.3.4 add --target cursor` remains a repository-only fallback because it still copies into `~/.cursor/extensions`. Cursor stays write-only/`adapted`; listing `local/` is not a native read-back.
 - **Skill adaptation prefers the host skills directory** when a validated local package exists (Pi, Gemini, OpenCode, Cline, and the rest of the skill map), instead of routing every local tree through `npx skills add`.
 - **Removal can delete managed host copies.** `plugins rm` removes Syncthis-managed Cursor local plugins and adapted skill directories in scope, and still leaves unmanaged neighbors untouched.
 

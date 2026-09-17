@@ -12,7 +12,7 @@ Read `VISION.md`, this file, `ROADMAP.md`, `app/AGENTS.md`, and `app/CHANGELOG.m
 
 - Private source is `app/`; npm and `forsvn-labs/syncthis` are distributions.
 - The reviewed 0.21.0 plugin hub and activation hardening are integrated on `main`.
-- Host directory mapping writes local packages into each agent's real plugin/skills/MCP paths. Cursor local drops use `~/.cursor/plugins/local` and stay write-only.
+- Host directory mapping writes local packages into each agent's real plugin/skills/MCP paths. Cursor local drops use `~/.cursor/plugins/local`, stay write-only, and copy only an existing root `plugin.json` or `.cursor-plugin/plugin.json`.
 - Retired Syncthis worktrees and lane branches are not sources of truth.
 
 ## Next action

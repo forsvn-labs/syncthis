@@ -47,6 +47,7 @@ describe("Cursor plugin reconciliation target", () => {
     const log = join(workDir, "npx.log");
     const binDir = join(workDir, "bin");
     await mkdir(join(source, ".claude-plugin"), { recursive: true });
+    await writeFile(join(source, "plugin.json"), JSON.stringify({ name: "foo" }));
     await writeFile(
       join(source, ".claude-plugin", "plugin.json"),
       JSON.stringify({ name: "foo" }),
@@ -80,6 +81,9 @@ describe("Cursor plugin reconciliation target", () => {
     expect(JSON.parse(await readFile(join(workDir, ".cursor/plugins/local/foo/plugin.json"), "utf8"))).toEqual({
       name: "foo",
     });
+    expect(JSON.parse(await readFile(join(workDir, ".cursor/plugins/local/foo/.claude-plugin/plugin.json"), "utf8"))).toEqual({
+      name: "foo",
+    });
     expect(await Bun.file(log).exists()).toBe(false);
   });
 
@@ -111,6 +115,33 @@ describe("Cursor plugin reconciliation target", () => {
     expect((await readFile(log, "utf8")).trim()).toBe(
       "npx -y plugins@1.3.4 add owner/foo --target cursor -y",
     );
+  });
+
+  test("rejects a Claude-overlay package instead of synthesizing plugin.json", async () => {
+    const source = join(workDir, "overlay-only-cursor");
+    await mkdir(join(source, ".claude-plugin"), { recursive: true });
+    await writeFile(
+      join(source, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "foo" }),
+    );
+
+    const cursor = pluginReconcileTargets().find((target) => target.agent === "cursor");
+    if (!cursor || cursor.mode !== "write-only") {
+      throw new Error("Cursor write-only target missing");
+    }
+    const result = await cursor.install(
+      {
+        ...(await degradationArtifact(workDir)),
+        sourceRepo: undefined,
+        pluginRoot: undefined,
+        sourcePluginPath: source,
+      },
+      { dryRun: false },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/refusing to synthesize/i);
+    expect(await Bun.file(join(workDir, ".cursor/plugins/local/foo/plugin.json")).exists()).toBe(false);
   });
 
   test("rejects a malformed standalone path before invoking Cursor's installer", async () => {
