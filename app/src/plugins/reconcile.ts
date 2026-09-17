@@ -21,6 +21,8 @@ import type {
 import type { ArtifactKey } from "./artifact-key.ts";
 import { materializePluginPackage } from "./store.ts";
 import { nativeOutcome, type PluginOutcome } from "./outcome.ts";
+import { hasDirectoryDropPlugin } from "./host-map.ts";
+import { writeHostPlugin } from "./host-sync.ts";
 
 export type PluginSupport =
   | { status: "supported" }
@@ -40,6 +42,8 @@ export type VerifiedPluginTarget = PluginTargetBase & {
 export type WriteOnlyPluginInstallResult = {
   ok: boolean;
   message?: string;
+  /** Directory already held this managed package; still not native activation. */
+  alreadyPresent?: boolean;
 };
 
 export type WriteOnlyPluginTarget = PluginTargetBase & {
@@ -578,6 +582,25 @@ async function reconcileWriteOnly(
   }
 
   if (dryRun) {
+    if (sourcePluginPath && hasDirectoryDropPlugin(target.agent)) {
+      const preview = await writeHostPlugin(target.agent, sourcePluginPath, { dryRun: true });
+      if (preview.status === "present") {
+        return {
+          ...base,
+          status: "present",
+          message: `already at ${preview.path} (activation cannot be read)`,
+          degradation: NO_DEGRADATION,
+        };
+      }
+      if (preview.status === "conflict" || preview.status === "failed") {
+        return {
+          ...base,
+          status: "failed",
+          message: preview.message ?? "write-only host directory preview failed",
+          degradation: NO_DEGRADATION,
+        };
+      }
+    }
     return {
       ...base,
       status: base.intent === "repair" ? "would-repair" : "would-install",
@@ -616,7 +639,7 @@ async function reconcileWriteOnly(
   }
   return {
     ...base,
-    status: "unverified",
+    status: installResult.alreadyPresent ? "present" : "unverified",
     message: installResult.message ?? "native installer succeeded; target has no readable activation state",
     installResult,
     degradation: NO_DEGRADATION,

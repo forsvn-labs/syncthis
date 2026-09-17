@@ -67,7 +67,7 @@ Prime Agent and Pi consume Agent Skills from the shared `~/.agents/skills` store
 
 ## Cursor limitation
 
-Cursor accepts the root Agent Plugins manifest natively today. However, Syncthis has not integrated a verified, readable native lifecycle or activation contract for Cursor: there is no proven installed-plugin read or post-apply activation read-back. Cursor is therefore treated as a conservative write/adaptation target — never reported as readable or natively verified, and never promoted to `native`. That limitation describes Syncthis's integration boundary, not a Cursor capability gap; later operations must preserve it instead of inventing observed state.
+Cursor accepts the root Agent Plugins manifest natively today. Syncthis writes local packages into `~/.cursor/plugins/local`, which is the documented user-local Agent Plugins load path, and can inventory that folder for doctor/idempotency. That listing is **not** a verified native lifecycle: org policy may ignore local imports, and there is still no proven installed-plugin read or post-apply activation read-back. Cursor is therefore treated as a conservative write/adaptation target — never reported as readable or natively verified, and never promoted to `native`. `npx plugins@1.3.4 add --target cursor` is retained only as a repository fallback; it copies into `~/.cursor/extensions`, which is not that load path.
 
 ## Per-client compatibility truth
 

@@ -446,6 +446,16 @@ export function printUninstallPreview(
       case "mcp-conflict":
         rowOf("drift", row.agent, "", `wrapper conflict(s) left untouched: ${row.names.join(", ")}`);
         break;
+      case "host-remove":
+        console.log(
+          `  ${red("-")} ${row.agent.padEnd(14)} ${row.name} ${dim(`(host ${row.surface} directory)`)}`,
+        );
+        break;
+      case "host-keep":
+        console.log(
+          dim(`  kept ${row.agent} ${row.name} (not Syncthis-managed)`),
+        );
+        break;
       case "unsupported":
         console.log(
           `  ${dim("·")} ${row.agent.padEnd(14)} ${dim("can't uninstall here (write-only plugin target)")}`,
@@ -544,6 +554,14 @@ export function printUninstallApplied(
         break;
       case "mcp-conflict":
         rowOf("drift", row.agent, "", `wrapper conflict(s) left untouched: ${row.names.join(", ")}`);
+        break;
+      case "host-removed":
+        removed += 1;
+        rowOf("synced", row.agent, row.name, "removed host directory");
+        break;
+      case "host-blocked":
+        failed += 1;
+        rowOf("failed", row.agent, row.name, neutralPluginText(row.reason, "host directory left untouched"));
         break;
       case "unsupported":
         break;

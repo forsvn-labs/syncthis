@@ -19,12 +19,21 @@ import type {
 import type { Adapter, AgentId, McpServer } from "../src/types.ts";
 
 let workDir: string;
+let originalHome: string | undefined;
+let originalXdg: string | undefined;
 
 beforeEach(async () => {
   workDir = await mkdtemp(join(tmpdir(), "syncthis-plugin-degrade-"));
+  originalHome = process.env.HOME;
+  originalXdg = process.env.XDG_CONFIG_HOME;
+  process.env.HOME = workDir;
+  delete process.env.XDG_CONFIG_HOME;
 });
 
 afterEach(async () => {
+  process.env.HOME = originalHome;
+  if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = originalXdg;
   await rm(workDir, { recursive: true, force: true });
 });
 
@@ -198,9 +207,8 @@ describe("targeted plugin degradation", () => {
       dependencies: deps,
     });
 
-    expect(skillCalls).toEqual([
-      { sources: ["owner/foo"], agents: ["codex"], dryRun: false },
-    ]);
+    expect(skillCalls).toEqual([]);
+    expect(await Bun.file(join(workDir, ".codex/skills/one/SKILL.md")).exists()).toBe(true);
     expect(writes).toEqual([
       {
         conflict: { command: "existing" },
@@ -410,10 +418,7 @@ describe("targeted plugin degradation", () => {
       },
     });
 
-    expect(calls).toEqual([
-      { source: secondCanonicalRoot, agent: "opencode" },
-      { source: first.pluginRoot!, agent: "gemini-cli" },
-    ]);
+    expect(calls).toEqual([]);
     expect(report.results.map((result) => result.artifactKey)).toEqual([
       second.artifactKey,
       first.artifactKey,
@@ -441,7 +446,7 @@ describe("targeted plugin degradation", () => {
       },
     });
 
-    expect(dryRuns).toEqual([true]);
+    expect(dryRuns).toEqual([]);
     expect(writes).toEqual([]);
     expect(report.results).toEqual([
       expect.objectContaining({ component: "skills", status: "would-add" }),
@@ -475,10 +480,24 @@ describe("targeted plugin degradation", () => {
 
     expect(writes).toEqual([]);
     expect(report.results).toEqual([
+      expect.objectContaining({ component: "skills", status: "added", added: ["one"] }),
+      expect.objectContaining({ component: "mcp", status: "unchanged", added: [] }),
+    ]);
+    expect(report.hasChanges).toBe(true);
+
+    const again = await runPluginDegradation({
+      reconcile: reconcile([item], [outcome(item, "gemini-cli")]),
+      dependencies: {
+        findMcpAdapter(agent) {
+          return adapter(agent, { bundled: { command: "bun" } }, writes);
+        },
+      },
+    });
+    expect(again.results).toEqual([
       expect.objectContaining({ component: "skills", status: "unchanged" }),
       expect.objectContaining({ component: "mcp", status: "unchanged", added: [] }),
     ]);
-    expect(report.hasChanges).toBe(false);
+    expect(again.hasChanges).toBe(false);
   });
 
   test("isolates per-target errors and rejects unvalidated local roots", async () => {

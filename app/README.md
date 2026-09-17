@@ -97,7 +97,7 @@ Syncthis drives Grok Build through its proven `grok plugin` CLI: trusted install
 
 ### Compatibility honesty
 
-- **Cursor** accepts the root Agent Plugins manifest natively today, but Syncthis has no integrated, verified native read or read-back for it. Cursor therefore remains a conservative write/adaptation target in Syncthis and is never reported as readable or natively verified — the limitation is Syncthis's integration boundary, not a Cursor capability claim.
+- **Cursor** accepts the root Agent Plugins manifest natively today, but Syncthis has no integrated, verified native read or read-back for it. Local packages are copied into `~/.cursor/plugins/local` (the load path) and reported as adapted. Cursor therefore remains a conservative write/adaptation target in Syncthis and is never reported as readable or natively verified — the limitation is Syncthis's integration boundary, not a Cursor capability claim.
 - **Claude Code** uses its `.claude-plugin` overlay plus its own scoped plugin CLI; that is how Syncthis reads and drives it.
 - **Grok Build** is Claude-lineage and compatible in practice, but xAI's official documentation does not claim agent-plugins.org conformance; Syncthis relies only on the proven `grok plugin` CLI contract.
 - **OpenAI** authoring exposes `.codex-plugin` overlays while Agent Plugins lists ChatGPT/Codex as compatible; Syncthis reads what Codex actually reports through its own CLI.

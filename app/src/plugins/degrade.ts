@@ -7,6 +7,7 @@ import { diffServers } from "../mcp-state.ts";
 import type { Adapter, AgentId, McpServer } from "../types.ts";
 import type { ArtifactKey } from "./artifact-key.ts";
 import { resolveSyncthisDataHome } from "./data-home.ts";
+import { writeHostSkills, type HostWriteResult } from "./host-sync.ts";
 import type { PluginInventoryArtifact } from "./inventory.ts";
 import {
   artifactKeyOf,
@@ -141,6 +142,50 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function hostSkillsOutcome(
+  writes: HostWriteResult[],
+  dryRun: boolean,
+): Pick<PluginDegradationResult, "status" | "added" | "conflicts" | "message" | "reachProven" | "unresolved"> {
+  const failures = writes.filter((item) => item.status === "failed");
+  const conflicts = writes.filter((item) => item.status === "conflict");
+  const added = writes.filter((item) => item.status === "created" || item.status === "would-create");
+  const present = writes.filter((item) => item.status === "present");
+  const names = added.map((item) => item.name);
+  const conflictNames = conflicts.map((item) => item.name);
+  if (failures.length > 0 && added.length === 0 && present.length === 0) {
+    return {
+      status: "failed",
+      message: failures[0]?.message ?? "host skills write failed",
+      unresolved: true,
+    };
+  }
+  if (added.length > 0) {
+    return {
+      status: dryRun ? "would-add" : "added",
+      added: names,
+      conflicts: conflictNames,
+      reachProven: failures.length === 0 && conflicts.length === 0,
+      unresolved: failures.length > 0 || conflicts.length > 0,
+      message: added[0]?.path ? `wrote skills under ${added[0].path.replace(/\/[^/]+$/, "")}` : undefined,
+    };
+  }
+  if (present.length > 0 && conflicts.length === 0 && failures.length === 0) {
+    return {
+      status: "unchanged",
+      added: present.map((item) => item.name),
+      message: "already on disk",
+      reachProven: true,
+    };
+  }
+  return {
+    status: "unchanged",
+    conflicts: conflictNames,
+    message: conflicts[0]?.message ?? "conflicting skill directory left untouched",
+    reachProven: false,
+    unresolved: true,
+  };
+}
+
 async function degradeSkills(
   outcome: PluginReconcileResult & {
     degradation: {
@@ -153,6 +198,21 @@ async function degradeSkills(
   install: NonNullable<PluginDegradationDependencies["addSkillSources"]>,
 ): Promise<PluginDegradationResult> {
   const base = baseResult(outcome, "skills");
+  const local = plan.ownership.pluginRoot ?? plan.source.localPlugin;
+  if (local) {
+    try {
+      const writes = await writeHostSkills(outcome.agent, local, { dryRun });
+      return { ...base, source: local, ...hostSkillsOutcome(writes, dryRun) };
+    } catch (err) {
+      return {
+        ...base,
+        source: local,
+        status: "failed",
+        message: errorMessage(err),
+      };
+    }
+  }
+
   const source = plan.source.skills?.value;
   if (!source) {
     return {

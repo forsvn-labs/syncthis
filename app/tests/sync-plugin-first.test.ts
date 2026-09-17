@@ -76,8 +76,40 @@ describe("Cursor plugin reconciliation target", () => {
 
     expect(result).toMatchObject({ ok: true });
     expect(result.message).toMatch(/cannot be read/i);
+    expect(await Bun.file(join(workDir, ".cursor/plugins/local/foo/plugin.json")).exists()).toBe(true);
+    expect(JSON.parse(await readFile(join(workDir, ".cursor/plugins/local/foo/plugin.json"), "utf8"))).toEqual({
+      name: "foo",
+    });
+    expect(await Bun.file(log).exists()).toBe(false);
+  });
+
+  test("falls back to pinned Open Plugins only when no local package exists", async () => {
+    const log = join(workDir, "npx.log");
+    const binDir = join(workDir, "bin");
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      join(binDir, "npx"),
+      `#!/bin/sh\necho "npx $@" >> "${log}"\nexit 0\n`,
+    );
+    await chmod(join(binDir, "npx"), 0o755);
+    process.env.PATH = `${binDir}:${testEnvironment.originalPath ?? ""}`;
+
+    const cursor = pluginReconcileTargets().find((target) => target.agent === "cursor");
+    if (!cursor || cursor.mode !== "write-only") {
+      throw new Error("Cursor write-only target missing");
+    }
+    const result = await cursor.install(
+      {
+        ...(await degradationArtifact(workDir)),
+        sourceRepo: "owner/foo",
+        pluginRoot: undefined,
+        sourcePluginPath: undefined,
+      },
+      { dryRun: false },
+    );
+    expect(result).toMatchObject({ ok: true });
     expect((await readFile(log, "utf8")).trim()).toBe(
-      `npx -y plugins@1.3.4 add ${await realpath(source)} --target cursor -y`,
+      "npx -y plugins@1.3.4 add owner/foo --target cursor -y",
     );
   });
 

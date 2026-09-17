@@ -34,9 +34,18 @@ import {
   type SkillRemoveResult,
 } from "../skills.ts";
 import type { AgentId, McpServer, SyncStatus } from "../types.ts";
+import { hasDirectoryDropPlugin, hasDirectoryDropSkills } from "./host-map.ts";
+import {
+  listHostPlugins,
+  listHostSkills,
+  removeManagedHostPlugin,
+  removeManagedHostSkill,
+  type HostWriteResult,
+} from "./host-sync.ts";
 
-// Plugin-capable agents with a list+uninstall CLI. Cursor is a plugin target but
-// write-only (no list CLI), so it can't be read or uninstalled from here.
+// Plugin-capable agents with a list+uninstall CLI. Cursor is write-only (no
+// list CLI); managed copies under ~/.cursor/plugins/local are removed via the
+// host-directory path instead of a native uninstall.
 const PLUGIN_UNINSTALL_AGENTS: readonly AgentId[] = pluginAdapters.map((a) => a.id);
 
 export type NativeUninstallTarget = {
@@ -76,16 +85,29 @@ export type McpRemovalResult = {
   message?: string;
 };
 
+export type HostUninstallTarget = {
+  agent: AgentId;
+  kind: "plugin" | "skill";
+  name: string;
+  path: string;
+  present: boolean;
+  managed: boolean;
+};
+
 export type UninstallReport = {
   plugins: string[];
   requestedAgents: AgentId[];
-  // Requested agents that can't be touched at all (currently just Cursor — a
-  // write-only plugin target with no list/uninstall CLI).
+  // Requested agents with no native uninstall, no skill cohort, and no
+  // directory-drop plugin/skill home Syncthis can remove.
   unsupportedAgents: AgentId[];
   native: NativeUninstallTarget[];
   skills: SkillRemovalPlan;
   /** Exact degraded MCP values owned by the selected inventory artifacts. */
   mcp: McpRemovalPlan[];
+  /** Managed host-directory plugin trees (Cursor local drop). */
+  hostPlugins?: HostUninstallTarget[];
+  /** Managed host-directory skill trees written during adaptation. */
+  hostSkills?: HostUninstallTarget[];
   // Requested agents eligible for skill removal (skill cohort + Codex), regardless of
   // whether they currently hold a removable skill. Lets the caller tell that skill
   // removal was *intended* even when nothing resolved.
@@ -102,6 +124,7 @@ export type UninstallReport = {
   nativeResults?: PluginUninstallResult[];
   skillResult?: SkillRemoveResult;
   mcpResults?: McpRemovalResult[];
+  hostResults?: HostWriteResult[];
   applied: boolean;
 };
 
@@ -170,7 +193,11 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
   const cohort = skillCohort();
 
   const unsupportedAgents = requested.filter(
-    (a) => !PLUGIN_UNINSTALL_AGENTS.includes(a) && !cohort.includes(a),
+    (a) =>
+      !PLUGIN_UNINSTALL_AGENTS.includes(a) &&
+      !cohort.includes(a) &&
+      !hasDirectoryDropPlugin(a) &&
+      !hasDirectoryDropSkills(a),
   );
 
   // Each requested plugin is `name` or `name@marketplace`. A bare name targets every
@@ -320,6 +347,57 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
 
   const skills: SkillRemovalPlan = { names: namesToRemove, kept, agents: effectiveSkillAgents.sort() };
 
+  const hostPlugins: HostUninstallTarget[] = [];
+  for (const agent of requested) {
+    if (!hasDirectoryDropPlugin(agent)) continue;
+    const entries = await listHostPlugins(agent);
+    for (const spec of specs) {
+      const entry = entries.find((item) => item.name === spec.name);
+      if (!entry) continue;
+      hostPlugins.push({
+        agent,
+        kind: "plugin",
+        name: spec.name,
+        path: entry.path,
+        present: true,
+        managed: entry.managed,
+      });
+    }
+  }
+
+  const hostSkillOwned = new Set<string>();
+  const hostSkillSurviving = new Set<string>();
+  await Promise.all([
+    ...selectedPlans.map(async (plan) => {
+      for (const name of await pluginSkillIds(plan.ownership.pluginRoot)) hostSkillOwned.add(name);
+    }),
+    ...survivingPlans.map(async (plan) => {
+      for (const name of await pluginSkillIds(plan.ownership.pluginRoot)) hostSkillSurviving.add(name);
+    }),
+    ...hostPlugins.filter((target) => target.managed).map(async (target) => {
+      for (const name of await pluginSkillIds(target.path)) hostSkillOwned.add(name);
+    }),
+  ]);
+  const hostSkillRemove = [...hostSkillOwned].filter((name) => !hostSkillSurviving.has(name)).sort();
+
+  const hostSkills: HostUninstallTarget[] = [];
+  for (const agent of requested) {
+    if (!hasDirectoryDropSkills(agent)) continue;
+    const entries = await listHostSkills(agent);
+    for (const name of hostSkillRemove) {
+      const entry = entries.find((item) => item.name === name);
+      if (!entry) continue;
+      hostSkills.push({
+        agent,
+        kind: "skill",
+        name,
+        path: entry.path,
+        present: true,
+        managed: entry.managed,
+      });
+    }
+  }
+
   // --- Plugin-derived MCP removal ---
   // Only non-native/degraded ownership is eligible. A current value must still
   // equal the selected artifact's bundled canonical value; conflicts and values
@@ -405,6 +483,8 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
     native,
     skills,
     mcp,
+    hostPlugins,
+    hostSkills,
     skillScope: skillAgents.slice().sort(),
     requiredSkillAgents: requested
       .filter((a) => skillAgents.includes(a))
@@ -424,7 +504,9 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
   const items =
     native.filter((t) => t.present || t.unreadable).length +
     (skills.names.length && skills.agents.length ? 1 : 0) +
-    mcp.filter((target) => target.names.length > 0 || target.unreadable).length;
+    mcp.filter((target) => target.names.length > 0 || target.unreadable).length +
+    hostPlugins.filter((target) => target.present && target.managed).length +
+    hostSkills.filter((target) => target.present && target.managed).length;
   let step = 0;
   const nativeResults: PluginUninstallResult[] = [];
   for (const t of native) {
@@ -572,14 +654,42 @@ export async function runPluginUninstall(opts: UninstallRunOpts): Promise<Uninst
     }
   }
 
-  return { ...base, nativeResults, skillResult, mcpResults, applied: true };
+  const hostResults: HostWriteResult[] = [];
+  for (const target of [...hostPlugins, ...hostSkills]) {
+    if (!target.present) continue;
+    if (!target.managed) {
+      hostResults.push({
+        agent: target.agent,
+        name: target.name,
+        path: target.path,
+        status: "conflict",
+        message: `existing ${target.kind} directory is not Syncthis-managed; left untouched`,
+      });
+      continue;
+    }
+    step += 1;
+    opts.onProgress?.(
+      `${target.agent}: remove host ${target.kind} ${target.name}`,
+      step,
+      items,
+    );
+    hostResults.push(
+      target.kind === "plugin"
+        ? await removeManagedHostPlugin(target.agent, target.name, { dryRun: false })
+        : await removeManagedHostSkill(target.agent, target.name, { dryRun: false }),
+    );
+  }
+
+  return { ...base, nativeResults, skillResult, mcpResults, hostResults, applied: true };
 }
 
-// Anything to actually do? (native, degraded skills, or an exact owned MCP value.)
+// Anything to actually do? (native, degraded skills, owned MCP, or managed host dirs.)
 export function uninstallHasChanges(report: UninstallReport): boolean {
   return (
     report.native.some((t) => t.present || t.unreadable) ||
     (report.skills.names.length > 0 && report.skills.agents.length > 0) ||
-    report.mcp.some((target) => target.names.length > 0 || !!target.unreadable)
+    report.mcp.some((target) => target.names.length > 0 || !!target.unreadable) ||
+    (report.hostPlugins ?? []).some((target) => target.present && target.managed) ||
+    (report.hostSkills ?? []).some((target) => target.present && target.managed)
   );
 }

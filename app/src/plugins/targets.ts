@@ -2,6 +2,7 @@ import { listAgentIds } from "../adapters/index.ts";
 import { skillCohort } from "../skills.ts";
 import type { AgentId } from "../types.ts";
 import { pluginAdapters } from "./index.ts";
+import { writeHostPlugin } from "./host-sync.ts";
 import {
   validateLocalPluginSource,
   type ValidatedPluginRoot,
@@ -12,19 +13,16 @@ import { isSafeRepoSlug, openPluginsArgs, run } from "./shell.ts";
 const CURSOR_PLUGIN_INSTALL_TIMEOUT_MS = 180_000;
 
 // Cursor accepts the root Agent Plugins manifest natively today, but Syncthis
-// has no integrated, verified native read or post-apply read-back for it. The
-// target is therefore write/adaptation-only here: installs are pushed through
-// its installer and reported as adapted with an explicit unverified-activation
-// annotation, never as readable or natively verified state.
+// has no integrated, verified native lifecycle read-back for it. The 2026 load
+// path is ~/.cursor/plugins/local (directory drop). Presence on disk is not
+// native activation — Cursor may ignore local imports — so outcomes stay adapted.
 function cursorPluginTarget(): PluginReconcileTarget {
   return {
     agent: "cursor",
     mode: "write-only",
     async install(artifact) {
-      const repo = artifact.sourceRepo;
-      const repoSource = repo && isSafeRepoSlug(repo) ? repo : undefined;
       let localSource: ValidatedPluginRoot | undefined;
-      if (!repoSource && artifact.sourcePluginPath) {
+      if (artifact.sourcePluginPath) {
         try {
           localSource = await validateLocalPluginSource(
             artifact.sourcePluginPath,
@@ -37,8 +35,21 @@ function cursorPluginTarget(): PluginReconcileTarget {
           };
         }
       }
-      const source = repoSource ?? localSource;
-      if (!source) {
+      if (localSource) {
+        const written = await writeHostPlugin("cursor", localSource, { dryRun: false });
+        if (written.status === "conflict" || written.status === "failed") {
+          return { ok: false, message: written.message };
+        }
+        return {
+          ok: true,
+          alreadyPresent: written.status === "present",
+          message: `${written.status === "present" ? "already at" : "copied to"} ${written.path} (activation cannot be read)`,
+        };
+      }
+
+      const repo = artifact.sourceRepo;
+      const repoSource = repo && isSafeRepoSlug(repo) ? repo : undefined;
+      if (!repoSource) {
         return {
           ok: false,
           message:
@@ -48,7 +59,7 @@ function cursorPluginTarget(): PluginReconcileTarget {
 
       const result = await run(
         "npx",
-        openPluginsArgs(["add", source, "--target", "cursor", "-y"]),
+        openPluginsArgs(["add", repoSource, "--target", "cursor", "-y"]),
         { timeoutMs: CURSOR_PLUGIN_INSTALL_TIMEOUT_MS },
       );
       if (result.notFound) {
@@ -63,7 +74,7 @@ function cursorPluginTarget(): PluginReconcileTarget {
       return {
         ok: result.ok,
         message: result.ok
-          ? "installed via npx -y plugins@1.3.4 (activation cannot be read)"
+          ? "installed via npx -y plugins@1.3.4 (activation cannot be read; prefers ~/.cursor/plugins/local when a local package exists)"
           : result.stderr.trim() || `exit ${result.exitCode}`,
       };
     },
