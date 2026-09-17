@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { MAIN_MENU } from "../src/tui.ts";
-import { COMMANDS, TAGLINE } from "../src/welcome.tsx";
+import { COMMANDS, NEXT_STEP, TAGLINE } from "../src/welcome.tsx";
 
 const FORBIDDEN_PUBLIC_TERMS = /\bskills?\b|\bmcp\b|model-context-protocol/i;
 const HIDDEN_COMMAND_TERMS = /\bsyncthis (?:add|mirror|run)\b|\bplugins (?:add|mirror)\b|--no-wrapper/i;
@@ -34,6 +34,16 @@ describe("plugin-only public surfaces", () => {
     expect(TAGLINE).not.toMatch(FORBIDDEN_PUBLIC_TERMS);
     expect(publicText(COMMANDS)).not.toMatch(FORBIDDEN_PUBLIC_TERMS);
     expect(publicText(COMMANDS)).not.toMatch(HIDDEN_COMMAND_TERMS);
+  });
+
+  test("welcome is quiet ink/forest, not a neon gradient", () => {
+    const welcome = readFileSync(new URL("../src/welcome.tsx", import.meta.url), "utf8");
+    expect(welcome).not.toContain("ink-gradient");
+    expect(welcome).not.toContain("Gradient");
+    expect(welcome).not.toContain("#7afb95");
+    expect(welcome).not.toContain("#00d4ff");
+    expect(welcome).toContain("FOREST");
+    expect(NEXT_STEP).toBe("syncthis sync");
   });
 
   test("interactive menu exposes only plugin actions and quit", () => {

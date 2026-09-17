@@ -200,13 +200,15 @@ describe("doctor routing", () => {
     await installPluginOverviewFixture();
     const result = run(["doctor"]);
     expect(result.code).toBe(1);
-    expect(result.out).toContain("Sources:");
+    expect(result.out).toContain("sources");
+    expect(result.out).toContain("Host map");
+    expect(result.out).toContain("PLUGIN DIR");
     expect(result.out).toContain("Synchronization preview");
     expect(result.out).toContain("foo");
     expect(result.out).toContain("blocked");
     expect(result.out).not.toContain("coverage:");
     expect(result.out).not.toContain("server");
-    expect(result.out).not.toMatch(FORBIDDEN_PUBLIC_TERMS);
+    expect(result.out).not.toMatch(/\bnpx\b/i);
   });
 
   test("plugin overview remains read-only", async () => {

@@ -244,8 +244,15 @@ describe("host directory sync", () => {
       scanHosts: async () => hosts,
     });
     const text = (await import("../src/plugins/doctor-report.ts")).renderPluginDoctor(report).join("\n");
-    expect(text).toContain("Host directories");
-    expect(text).toContain("cursor  write-only");
+    expect(text).toContain("Host map");
+    expect(text).toContain("agent · plugin dir · skills · MCP · abi");
+    expect(text).toContain("PLUGIN DIR");
+    expect(text).toContain("SKILLS");
+    expect(text).toContain("MCP");
+    expect(text).toContain("ABI");
+    expect(text).toContain("cursor");
+    expect(text).toContain("write-only");
+    expect(text).toContain("~/.cursor/plugins/local");
     expect(text).toContain("stray");
     expect(text).toContain("on-disk copy is adapted, not native");
     expect(text).not.toMatch(/^cursor\s+verified/m);

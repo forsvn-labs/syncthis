@@ -1,4 +1,4 @@
-import { pluginOutcomeRows, renderPluginSyncReport } from "../cli/plugin-outcomes.ts";
+import { pluginOutcomeRows, pluginSyncHasChanges, renderPluginSyncReport } from "../cli/plugin-outcomes.ts";
 import { runSync, type SyncOptions, type SyncReport } from "../sync.ts";
 import {
   buildPluginOverview,
@@ -11,6 +11,7 @@ import {
   scanAgentHosts,
   type HostDirectoryScan,
 } from "./host-sync.ts";
+import type { HostSurface } from "./host-map.ts";
 
 export type PluginDoctorReport = {
   overview: PluginOverview;
@@ -68,19 +69,50 @@ function hostHomeRel(path: string | null): string {
   return path;
 }
 
+function hostDisplay(surface: HostSurface): string {
+  if (surface.kind === "none") return "—";
+  if (surface.template) return surface.template;
+  return hostHomeRel(surface.path);
+}
+
+function pad(value: string, width: number): string {
+  return value.padEnd(width);
+}
+
+function columnWidths(headers: readonly string[], rows: readonly string[][]): number[] {
+  return headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)),
+  );
+}
+
+function alignedRow(cells: readonly string[], widths: readonly number[]): string {
+  return cells.map((cell, index) => pad(cell, widths[index] ?? cell.length)).join("  ");
+}
+
+/** Designed host map: agent · plugin dir · skills · MCP · abi */
+export const HOST_MAP_HEADERS = ["AGENT", "PLUGIN DIR", "SKILLS", "MCP", "ABI"] as const;
+
 export function renderHostDoctor(hosts: HostDirectoryScan[]): string[] {
   if (hosts.length === 0) return [];
+  const rows = hosts.map((row) => [
+    row.agent,
+    hostDisplay(row.host.plugin),
+    hostDisplay(row.host.skills),
+    hostDisplay(row.host.mcp),
+    row.pluginAbi,
+  ]);
+  const widths = columnWidths(HOST_MAP_HEADERS, rows);
   const lines = [
-    "Host directories (inventory; directory presence is not native activation)",
+    "Host map",
+    "agent · plugin dir · skills · MCP · abi",
+    "inventory only — directory presence is not native activation",
+    "",
+    alignedRow(HOST_MAP_HEADERS, widths),
+    widths.map((width) => "─".repeat(width)).join("  "),
+    ...rows.map((row) => alignedRow(row, widths)),
   ];
+  const notes: string[] = [];
   for (const row of hosts) {
-    const pluginHome = hostHomeRel(row.host.plugin.path);
-    const pluginBit = row.host.plugin.kind === "none"
-      ? "no plugin ABI"
-      : row.plugins.length > 0
-        ? `${pluginHome} (${row.plugins.filter((item) => item.managed).length} managed · ${row.plugins.filter((item) => !item.managed).length} unmanaged)`
-        : `${pluginHome} (${row.host.plugin.kind})`;
-    lines.push(`${row.agent}  ${row.pluginAbi}  ${pluginBit}`);
     const unmanagedPlugins = row.plugins.filter((item) => !item.managed);
     const unmanagedAdapted = row.skills.filter((item) => !item.managed);
     if (unmanagedPlugins.length > 0 || unmanagedAdapted.length > 0) {
@@ -88,12 +120,13 @@ export function renderHostDoctor(hosts: HostDirectoryScan[]): string[] {
         ...unmanagedPlugins.map((item) => `plugin ${item.name}`),
         ...unmanagedAdapted.map((item) => `adapted ${item.name}`),
       ];
-      lines.push(`  drift  unmanaged: ${bits.join(", ")} (left untouched)`);
+      notes.push(`  drift  ${row.agent}  unmanaged: ${bits.join(", ")} (left untouched)`);
     }
     if (row.pluginAbi === "write-only") {
-      lines.push("  note  write-only: on-disk copy is adapted, not native");
+      notes.push(`  note   ${row.agent}  write-only: on-disk copy is adapted, not native`);
     }
   }
+  if (notes.length > 0) lines.push("", ...notes);
   return lines;
 }
 
@@ -104,14 +137,21 @@ export function renderPluginDoctor(report: PluginDoctorReport): string[] {
     .map((outcome) => `${outcome} ${report.outcomes[outcome]}`)
     .join(" · ");
   const hostLines = renderHostDoctor(report.hosts);
+  const status = report.ok ? "clean" : "issues found";
+  const next = report.ok && !pluginSyncHasChanges(report.preview)
+    ? []
+    : ["", `next  syncthis sync`];
   return [
-    `Sources: ${counts.readableAgents} readable · ${counts.blockedAgents} blocked · ${counts.plugins} plugins · ${counts.nativeInstalls} native installs`,
-    ...(outcomeSummary ? [`Outcomes: ${outcomeSummary}`] : []),
+    `Doctor  ·  ${status}`,
+    `  sources   ${counts.readableAgents} readable · ${counts.blockedAgents} blocked · ${counts.plugins} plugins · ${counts.nativeInstalls} native installs`,
+    ...(outcomeSummary ? [`  outcomes  ${outcomeSummary}`] : []),
     "",
+    ...(hostLines.length ? [...hostLines, ""] : []),
+    "Installed plugins",
     ...renderPluginOverview(report.overview),
-    ...(hostLines.length ? ["", ...hostLines] : []),
     "",
     "Synchronization preview",
     ...renderPluginSyncReport(report.preview),
+    ...next,
   ];
 }

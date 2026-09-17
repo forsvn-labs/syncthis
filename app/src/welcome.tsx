@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import React from "react";
 import { Box, Text, render } from "ink";
-import Gradient from "ink-gradient";
+import { FOREST } from "./cli/palette.ts";
 
 function readPackageVersion(): string {
   try {
@@ -17,8 +17,7 @@ function readPackageVersion(): string {
 
 const VERSION = readPackageVersion();
 
-// Keep the Syncthis wordmark as a static string so the published Node bundle
-// has no runtime font-file dependency. The gradient supplies the visual treatment.
+// Static wordmark: the published Node bundle has no runtime font-file dependency.
 const WORDMARK = "SYNCTHIS";
 
 interface CommandRow {
@@ -42,37 +41,34 @@ export const COMMANDS: CommandRow[] = [
   { cmd: "syncthis help", desc: "plugin commands and outcomes" },
 ];
 
+export const NEXT_STEP = "syncthis sync";
+
 function Welcome() {
   const cmdWidth = Math.max(...COMMANDS.map((c) => c.cmd.length)) + 2;
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Gradient colors={["#7afb95", "#00d4ff"]}>
-        <Text>{WORDMARK}</Text>
-      </Gradient>
+      <Text bold color={FOREST}>{WORDMARK}</Text>
+      <Text dimColor>{TAGLINE}</Text>
 
-      <Box marginBottom={1} marginLeft={2}>
-        <Text dimColor>{TAGLINE}</Text>
-      </Box>
-
-      {COMMANDS.map((c) => (
-        <Box key={c.cmd}>
-          <Text dimColor>  $ </Text>
-          <Box width={cmdWidth}>
-            <Text>{c.cmd}</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {COMMANDS.map((c) => (
+          <Box key={c.cmd}>
+            <Text dimColor>  $ </Text>
+            <Box width={cmdWidth}>
+              <Text>{c.cmd}</Text>
+            </Box>
+            <Text dimColor>{c.desc}</Text>
           </Box>
-          <Text dimColor>{c.desc}</Text>
-        </Box>
-      ))}
-
-      <Box marginTop={1} marginLeft={2}>
-        <Text>try: </Text>
-        <Text color="green">syncthis sync</Text>
-        <Text dimColor>  — install once, use everywhere</Text>
+        ))}
       </Box>
 
-      <Box marginTop={1} marginLeft={2}>
-        <Text dimColor>v{VERSION} · </Text>
-        <Text color="cyan">https://github.com/forsvn-labs/syncthis</Text>
+      <Box marginTop={1}>
+        <Text dimColor>  next  </Text>
+        <Text color={FOREST}>{NEXT_STEP}</Text>
+      </Box>
+
+      <Box marginTop={1}>
+        <Text dimColor>  v{VERSION}</Text>
       </Box>
     </Box>
   );
