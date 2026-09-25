@@ -1,6 +1,6 @@
 # syncthis index
 
-Map of this repository. Read with `AGENTS.md`, `MEMORY.md`, and the four horsemen.
+Map of this repository. Read with `AGENTS.md` and the four horsemen.
 
 ## Layout
 
