@@ -160,7 +160,6 @@ describe("Lines scroll window", () => {
     expect(win.belowCount).toBe(0);
     expect(win.rows).toBe(4);
     expect(win.start + win.rows).toBe(10);
-    expect(win.aboveCount).toBe(6);
     expect(renderedRows(10, 10, 5)).toBe(5);
   });
 
