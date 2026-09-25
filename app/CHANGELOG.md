@@ -8,6 +8,9 @@ All notable changes to `@forsvn/syncthis` are documented here. Format loosely fo
 - **Host directory map.** Each supported agent now has an explicit plugin-directory / skills-directory / MCP-file target. Sync writes local Agent Plugins packages and skill trees into the directories those agents actually load, with `.syncthis-managed.json` markers, unmanaged-conflict preservation, and `0600` on secret-bearing files.
 - **Doctor host inventory.** `syncthis doctor` reports per-agent host paths, managed vs unmanaged directory drops, and write-only notes. Directory presence is inventory, not native activation.
 
+### Removed
+- **Low-signal unit tests.** Deleted `tests/welcome.test.ts`, `tests/tui-layout.test.ts`, `tests/tui-sync.test.ts`, and `tests/control-center.test.ts` (42 tests). Public-surface enforcement stays with the real-CLI black-box tests in `tests/cli-routing.test.ts`; sync confirmation order stays with `tests/control-center-policy.test.ts`; uninstall rendering parity stays with `tests/uninstall-presentation.test.ts`. No product behavior changed.
+
 ### Changed
 - **Welcome and control center drop neon cyan/green.** The wordmark is quiet forest on the terminal, with one recommended next step, instead of a hacker-CLI gradient.
 - **Doctor host inventory is a designed table.** Each agent is one row: plugin dir, skills, MCP, ABI. Notes sit under the table. Directory presence is still inventory, not native activation.
