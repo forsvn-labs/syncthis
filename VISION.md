@@ -13,3 +13,9 @@ the clients that can preserve each capability safely.
 - Plan before writes, detect drift, and refuse unsafe confirmed plans as a whole.
 - Keep client behavior explicit, tested, and reversible.
 - Treat Cursor and other incomplete contracts honestly rather than guessing lifecycle support.
+
+## Source map
+
+- [app/bin/syncthis.ts](app/bin/syncthis.ts) dispatches the CLI.
+- [app/src/sync.ts](app/src/sync.ts) coordinates reconciliation.
+- [app/src/plugins/reconcile.ts](app/src/plugins/reconcile.ts) handles native target reconciliation.
