@@ -1,16 +1,16 @@
 # Syncthis
 
-Private source directory for **Syncthis** inside the `hungv47/ipse` monorepo: the cross-client sync,
+Source repository for **Syncthis**: the cross-client sync,
 adaptation, and verification layer for [Agent Plugins](https://agent-plugins.org/).
 
 > **Install a plugin once. Use it everywhere.**
 
 | Path | Owns |
 |---|---|
-| [`app/`](app/) | CLI source published to npm as `@forsvn/syncthis` and mirrored publicly to [`forsvn-labs/syncthis`](https://github.com/forsvn-labs/syncthis). |
+| [`app/`](app/) | CLI source published to npm as `@forsvn/syncthis` and maintained in [`forsvn-labs/syncthis`](https://github.com/forsvn-labs/syncthis). |
 | [`ops/`](ops/) | Product data, positioning, and marketing operations. |
 | [`brand/`](brand/) | Product identity; currently inherits FORSVN house tokens. |
-| [`scripts/publish-mirror.sh`](scripts/publish-mirror.sh) | Push-only export of tracked `app/` files to the public mirror. |
+| [`scripts/publish-mirror.sh`](scripts/publish-mirror.sh) | Historical export helper; the current source is this standalone repository. |
 
 Agent Plugins owns the plugin model. Syncthis does not define a competing manifest or registry; it owns cross-client discovery, packaging, adaptation, configuration, reconciliation, verification, and reporting.
 
