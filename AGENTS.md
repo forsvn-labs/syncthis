@@ -2,5 +2,6 @@
 
 - [VISION.md](VISION.md)
 - [ROADMAP.md](ROADMAP.md)
-- [PROGRESS.md](PROGRESS.md)
 - [CHANGELOG.md](CHANGELOG.md)
+- [STRUCTURE.md](STRUCTURE.md)
+- [DRIVE.md](DRIVE.md)
