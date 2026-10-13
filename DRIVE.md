@@ -8,6 +8,6 @@ Store source media, office files, private planning that cannot enter this reposi
 
 Git owns authoring text that fits this repository's audience, code, asset recipes, and required build assets. Generated runtime images and licensed fonts stay in Git when the build requires them. Do not commit guest data, local databases, screenshots, master artwork, or raw video just to make navigation easier.
 
-Local folder existence was checked on 13 October 2026. Executor v2 remote identity, permissions, and new-folder sync are not verified by this guide. If access is missing, record the blocker in ROADMAP.md and continue work that does not require it. Do not change folder sharing to resolve access.
+For remote access, use the personal Executor v2 profile identified by the private registry and verify its current account. The registry records the dated folder and sharing checks. Put access blockers in the owning work record. Do not change folder sharing to resolve access.
 
 Keep this public guide limited to the project key and storage rules. Exact folder IDs, account details, mount paths, and private file names belong in the private lookup. A Drive URL is a locator, not access permission.
