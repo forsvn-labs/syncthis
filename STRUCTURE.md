@@ -2,7 +2,7 @@
 
 This Git root owns the files tracked in [forsvn-labs/syncthis](https://github.com/forsvn-labs/syncthis). The repository is public. Keep private planning and external folder identities in the authorized Drive lookup.
 
-VISION.md records purpose. ROADMAP.md owns priorities, active work, blockers, and the live handoff. CHANGELOG.md records verified delivery. STRUCTURE.md maps ownership and working commands. DRIVE.md locates external materials.
+VISION.md records purpose. ROADMAP.md owns priorities, active work, blockers, and the live handoff. CHANGELOG.md records verified delivery. STRUCTURE.md maps ownership and working commands. BRAIN.md locates external materials.
 
 ## Architecture and ownership
 
@@ -36,4 +36,4 @@ Useful current work moved to ROADMAP.md where this is a product. Location and re
 
 ## External materials and recall
 
-Use DRIVE.md for original media, sendables, and verification evidence. Keep deployable assets needed by a build in Git with their source and license. Mem0 is optional recall through the correct Executor v2 account. Store a scope, project key, source pointer, and truth date; open the current source before using a recalled claim. Do not upload credentials, private identity, medical, finance, or employer-confidential source bodies.
+Use BRAIN.md for original media, sendables, and verification evidence. Keep deployable assets needed by a build in Git with their source and license. Mem0 is optional recall through the correct Executor v2 account. Store a scope, project key, source pointer, and truth date; open the current source before using a recalled claim. Do not upload credentials, private identity, medical, finance, or employer-confidential source bodies.
