@@ -1,19 +1,28 @@
 # Syncthis
 
-Source repository for **Syncthis**: the cross-client sync,
-adaptation, and verification layer for [Agent Plugins](https://agent-plugins.org/).
+Cross-client sync, adaptation, and verification for installed Agent Plugins.
 
-> **Install a plugin once. Use it everywhere.**
+- [VISION.md](VISION.md): users, intended outcomes, and scope.
+- [BRAIN.md](BRAIN.md): external knowledge key and authorized Drive access.
+- [STRUCTURE.md](STRUCTURE.md): architecture and repository map.
+- [STATUS.md](STATUS.md): dated state, blockers, and next steps.
 
-| Path | Owns |
-|---|---|
-| [`app/`](app/) | CLI source published to npm as `@forsvn/syncthis` and maintained in [`forsvn-labs/syncthis`](https://github.com/forsvn-labs/syncthis). |
-| [`ops/`](ops/) | Product data, positioning, and marketing operations. |
-| [`brand/`](brand/) | Product identity; currently inherits FORSVN house tokens. |
-| [`scripts/publish-mirror.sh`](scripts/publish-mirror.sh) | Historical export helper; the current source is this standalone repository. |
+## Run from source
 
-Agent Plugins owns the plugin model. Syncthis does not define a competing manifest or registry; it owns cross-client discovery, packaging, adaptation, configuration, reconciliation, verification, and reporting.
+Use Bun for development and Node 22+ for the installed CLI.
 
-Syncthis reads installed plugin state from Claude Code (`.claude-plugin` overlay plus its scoped CLI), Codex, GitHub Copilot, and Grok Build. Cursor natively accepts the root Agent Plugins manifest today, but Syncthis has no verified readable native lifecycle contract for it, so Cursor stays a conservative write-only target; Prime Agent, Cline, Pi, and other non-hosting clients receive only the plugin capabilities their supported adaptation can preserve.
+```bash
+cd app
+bun install
+bun bin/syncthis.ts help
+bun run test
+bun run lint
+bun run typecheck
+bun run build
+```
 
-The public mirror is a generated distribution surface. Make product changes here, then publish the tracked `app/` tree with the mirror script.
+Published usage: `npm install -g @forsvn/syncthis`, then
+`syncthis plugins list` or `syncthis sync --dry-run`.
+[app/README.md](app/README.md) covers commands and confirmations;
+[CHANGELOG.md](CHANGELOG.md) links versioned releases. This repository
+owns source; mirror-export scripts are historical helpers.

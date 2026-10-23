@@ -1,10 +1,10 @@
 # Syncthis changelog
 
-The canonical versioned release history is [`app/CHANGELOG.md`](app/CHANGELOG.md).
+## 2026-08-26 — 0.21.0
 
-Current release: `0.21.0` on 2026-08-26. It made the no-argument Ink experience the plugin hub and
-shipped the guarded activation, compatibility, presentation, and release-truth hardening completed
-across the reviewed lanes.
+- Recorded package release of the installed-plugin hub, guarded native
+  activation/configuration, and compatibility/release-truth improvements.
+- Local source tag: `v0.21.0`; package version: `0.21.0`.
 
-Update the app changelog for releases. Keep this root file as the stable release-history entry
-point.
+[app/CHANGELOG.md](app/CHANGELOG.md) owns detailed versioned release history.
+[STATUS.md](STATUS.md) tracks integrated work awaiting a later release.

@@ -2,20 +2,25 @@
 
 Install a plugin once. Use it everywhere.
 
-Syncthis is the cross-client discovery, adaptation, configuration, reconciliation, verification,
-and reporting layer for Agent Plugins. It helps one canonical plugin installation travel across
-the clients that can preserve each capability safely.
+Syncthis helps people using several coding agents carry one canonical
+plugin installation across clients. It owns discovery, adaptation,
+configuration, reconciliation, verification, and reporting. Success means
+each plugin's capabilities are preserved where supported, with drift and
+capability loss visible before changes are applied.
 
-## How we play
+## Scope
 
-- Agent Plugins owns the model; Syncthis does not invent a competing manifest or registry.
-- Adapt conservatively and report capability loss instead of pretending parity.
-- Plan before writes, detect drift, and refuse unsafe confirmed plans as a whole.
-- Keep client behavior explicit, tested, and reversible.
-- Treat Cursor and other incomplete contracts honestly rather than guessing lifecycle support.
+Discover installed plugins from readable native hosts; plan before
+writes; apply explicit, reversible changes through the appropriate
+target contract; and verify native activation with a fresh authoritative
+read. Keep CLI and interactive hub outcomes consistent. Directory
+inventory alone never proves activation. Cursor remains write-only
+until a readable, testable lifecycle contract exists.
 
-## Source map
+## Non-goals
 
-- [app/bin/syncthis.ts](app/bin/syncthis.ts) dispatches the CLI.
-- [app/src/sync.ts](app/src/sync.ts) coordinates reconciliation.
-- [app/src/plugins/reconcile.ts](app/src/plugins/reconcile.ts) handles native target reconciliation.
+Agent Plugins owns the model. Syncthis does not create another manifest,
+plugin standard, hosted registry, or marketplace. It does not silently
+convert away capabilities or claim native parity from a copied directory.
+See the [product contract](app/docs/plugin-product-contract.md) for exact
+outcomes and [STATUS.md](STATUS.md) for current work.

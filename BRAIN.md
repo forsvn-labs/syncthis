@@ -1,13 +1,30 @@
-# External materials
+# External knowledge
 
+Provider: Google Drive, personal scope.
 Project key: `forsvn/syncthis`.
 
-Resolve this key in the authorized personal Drive registry owned by the private tools repository. The local command is `python3 drive_projects.py forsvn/syncthis` from that repository. The registry stores account scope, folder path, related folders, and available folder IDs.
+Resolve this stable key through the authorized private project registry
+in the personal tools repository:
 
-Store source media, office files, private planning that cannot enter this repository, and review captures in the project folder. Use `sources/`, `references/`, `exports/`, or dated `verification/` folders when needed. Keep one original; link related material instead of making a second copy.
+```bash
+python3 drive_projects.py forsvn/syncthis
+```
 
-Git owns authoring text that fits this repository's audience, code, asset recipes, and required build assets. Generated runtime images and licensed fonts stay in Git when the build requires them. Do not commit guest data, local databases, screenshots, master artwork, or raw video just to make navigation easier.
+The verified folder identity and access scope stay in that private resolver.
+The 2026-10-23 route verification matched the registered folder identity
+and confirmed its `OPEN THIS.md` navigation map. Open that map first;
+follow its existing source, resource, evidence, and archive routes.
+Retain each source's truth date and link to the original rather than
+copying whole documents between Git and Drive.
 
-For remote access, use the personal Executor v2 profile identified by the private registry and verify its current account. The registry records the dated folder and sharing checks. Put access blockers in the owning work record. Do not change folder sharing to resolve access.
+Drive owns client-contract references, compatibility research, and verification captures.
+Git owns code, build configuration, required runtime assets, licenses,
+and code-dependent documentation. Application data retains its existing
+store; Drive is the knowledge provider, not a new runtime database.
 
-Keep this public guide limited to the project key and storage rules. Exact folder IDs, account details, mount paths, and private file names belong in the private lookup. A Drive URL is a locator, not access permission.
+Use the existing authorized account; a folder locator does not grant
+access or prove cloud sync. If access fails, request the folder from its
+owner and record the access blocker in the private work record. Keep
+folder IDs, mounted paths, credentials, and private discussions in the
+private resolver or Drive. [STRUCTURE.md](STRUCTURE.md) maps ownership;
+[STATUS.md](STATUS.md) owns current project state.
