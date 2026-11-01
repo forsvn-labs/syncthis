@@ -1,46 +1,78 @@
-# Syncthis structure
+# Structure
 
-This public repository owns the `@forsvn/syncthis` source. `app/` is a
-code subtree, not a separate Git repository. npm is a distribution.
+This public repository owns the `@forsvn/syncthis` source. `app/` is a code
+subtree, not a separate Git repository. npm is a distribution.
 
-## Code architecture
-
-[app/bin/syncthis.ts](app/bin/syncthis.ts) routes commands to shared
-services. Native inventories identify installed plugins and source
-provenance. Reconciliation produces target outcomes and guarded plans;
-adapters apply supported capabilities, native lifecycle services verify
-read-back, and doctor reports drift. The Ink hub uses the same services.
+## At a glance
 
 ```text
 app/bin/                         CLI entrypoint
-app/src/control-center.tsx       Interactive plugin hub
-app/src/sync.ts                  Cross-target coordination
-app/src/plugins/inventory.ts     Native source discovery
-app/src/plugins/reconcile.ts     Plans and target reconciliation
-app/src/plugins/activation.ts    Guarded native lifecycle actions
-app/src/plugins/host-map.ts      Per-agent load paths and ABI
-app/src/plugins/host-sync.ts     Managed directory drops
-app/src/plugins/outcome.ts       Canonical outcome vocabulary
-app/src/plugins/secure-tree.ts   Source tree safety
-app/src/doctor.ts                Diagnostics entry
-app/tests/                      CLI, target, safety, and drift regressions
-app/docs/                       Product/capability contracts
-app/scripts/build.ts            Distribution build
-docs/                           Repository-level project context
-ops/                            Product metadata and operations
-brand/                          Identity context
+app/src/                         Shared services and interactive hub
+app/tests/                       CLI, target, safety, and drift regressions
+app/docs/                        Product and capability contracts
+app/scripts/build.ts             Distribution build
+docs/                            Repository-level project context
+ops/                             Product metadata and operations
+brand/                           Identity context
 scripts/publish-mirror.sh        Historical export helper
 ```
 
-The [product contract](app/docs/plugin-product-contract.md) defines native,
-adapted, and blocked outcomes; [app/README.md](app/README.md) documents
-commands. [README.md](README.md) has source setup and checks.
+## Code
 
-## External knowledge architecture
+| Path | Responsibility |
+| --- | --- |
+| `app/bin/syncthis.ts` | Route CLI commands to shared services |
+| `app/src/control-center.tsx` | Interactive plugin hub using the same services |
+| `app/src/sync.ts` | Cross-target coordination |
+| `app/src/plugins/inventory.ts` | Native source discovery and provenance |
+| `app/src/plugins/reconcile.ts` | Plans and target reconciliation |
+| `app/src/plugins/activation.ts` | Guarded native lifecycle actions and verification |
+| `app/src/plugins/host-map.ts` | Per-agent load paths and ABI |
+| `app/src/plugins/host-sync.ts` | Managed directory drops |
+| `app/src/plugins/outcome.ts` | Canonical outcome vocabulary |
+| `app/src/plugins/secure-tree.ts` | Source tree safety |
+| `app/src/doctor.ts` | Drift diagnostics |
 
-[BRAIN.md](BRAIN.md) resolves `forsvn/syncthis` to Google Drive and its
-`OPEN THIS.md` source/resource/evidence map. Client-contract research,
-private planning, and captures live there. Code, tests, bundled contracts,
-and required build assets stay in Git; current work is summarized once
-in [STATUS.md](STATUS.md). Client state remains in each client's existing
-store and is not made authoritative by a Drive note.
+From `app/`: `bun install`, `bun bin/syncthis.ts help`, `bun run test`,
+`bun run lint`, `bun run typecheck`, and `bun run build`.
+Development uses Bun. The installed CLI requires Node 22+.
+
+## Read before changing
+
+- [Product contract](app/docs/plugin-product-contract.md) before changes to
+  plugin discovery, adaptation, outcomes, or native lifecycle behavior.
+- [Package README](app/README.md) before changes to commands, confirmation,
+  or compatibility behavior.
+
+Where new work goes:
+
+| To add | Put it in |
+| --- | --- |
+| A plugin target or lifecycle change | `app/src/plugins/` |
+| A hub interaction | `app/src/control-center.tsx`, using shared services |
+| A behavior regression check | `app/tests/` |
+| A code-dependent product contract | `app/docs/` |
+| Research or verification captures | Existing Drive routes in [BRAIN.md](BRAIN.md) |
+
+Conventions: inventory identifies installed plugins and provenance.
+Reconciliation plans target outcomes. Adapters apply supported capabilities,
+and native lifecycle services verify with a fresh authoritative read.
+
+## Knowledge
+
+| Location | Contents |
+| --- | --- |
+| drive:forsvn/syncthis | Private client-contract research, planning, and captures; resolve in the owner's private registry, then open `OPEN THIS.md` |
+| `app/docs/` | Bundled contracts and code-dependent documentation |
+| `docs/pr/host-map.html` | Host-directory mapping reference |
+| Each client's existing store | Client state; a Drive note does not make it authoritative |
+
+New knowledge follows the save rules in [BRAIN.md](BRAIN.md).
+
+## Other documents
+
+- [README.md](README.md): source setup and checks.
+- [app/README.md](app/README.md): public commands and confirmations.
+- [CHANGELOG.md](CHANGELOG.md): recorded deliveries. [app/CHANGELOG.md](app/CHANGELOG.md): detailed version history and legacy Unreleased section.
+- [PROGRESS.md](PROGRESS.md): current state, release gates, and deferred work.
+- `AGENTS.md` and `CLAUDE.md`: agent entrypoints.

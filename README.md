@@ -5,7 +5,7 @@ Cross-client sync, adaptation, and verification for installed Agent Plugins.
 - [VISION.md](VISION.md): users, intended outcomes, and scope.
 - [BRAIN.md](BRAIN.md): external knowledge key and authorized Drive access.
 - [STRUCTURE.md](STRUCTURE.md): architecture and repository map.
-- [STATUS.md](STATUS.md): dated state, blockers, and next steps.
+- [PROGRESS.md](PROGRESS.md): dated state, blockers, and next steps.
 
 ## Run from source
 
